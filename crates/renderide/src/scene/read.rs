@@ -119,6 +119,12 @@ impl<T> MeshDeformSceneRead for T where T: SceneMeshRendererRead + SceneTransfor
 pub(crate) trait WorldMeshSceneRead: SceneMeshRendererRead + SceneTransformRead {
     /// LOD groups indexed by dense LOD-group renderable id.
     fn lod_groups(&self, id: RenderSpaceId) -> Option<&[LodGroupEntry]>;
+
+    /// Version of `id`'s LOD group membership, bumped on every mutation.
+    ///
+    /// Lets a consumer detect a membership change by comparing one integer instead of hashing the
+    /// whole table. Returns `None` for a space that does not exist.
+    fn lod_generation(&self, id: RenderSpaceId) -> Option<u64>;
     /// PhotonDust billboard renderers indexed by billboard renderable id.
     fn billboard_render_buffers(&self, id: RenderSpaceId) -> Option<&[BillboardRenderBufferEntry]>;
     /// PhotonDust mesh-particle renderers indexed by mesh render-buffer renderable id.

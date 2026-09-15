@@ -9,6 +9,8 @@
 
 mod expand;
 mod lod;
+mod ordinals;
+mod refit_batch;
 mod spatial;
 
 use hashbrown::{HashMap, HashSet};
@@ -23,13 +25,15 @@ use crate::render_contract::ParticleDrawKind;
 use crate::scene::{
     MeshRendererInstanceId, RenderSpaceId, RenderWorldParticleRendererDirty,
     RenderWorldParticleRendererKind, RenderWorldRendererDirty, RenderWorldRendererKind,
-    SceneCoordinator, SceneMeshRendererRead, WorldMeshSceneRead,
+    SceneCoordinator, WorldMeshSceneRead,
 };
 use crate::shared::{RenderingContext, ShadowCastMode};
 use crate::world_mesh::culling::{MeshCullGeometry, WorldMeshCullInput};
 
 use expand::{empty_material_key_signature, populate_runs_and_material_keys};
 pub(super) use lod::{FramePreparedLodEntry, FramePreparedLodGroup};
+use ordinals::{populate_renderer_ordinals_from_runs, populate_renderer_ordinals_from_scene};
+pub(in crate::world_mesh::draw_prep) use spatial::indexable_run_bounds;
 use spatial::{PreparedSpatialIndex, PreparedSpatialRunCandidates};
 
 #[cfg(test)]
@@ -263,9 +267,12 @@ fn populate_renderer_run_lookup(
     draws: &[FramePreparedDraw],
     runs: &[FramePreparedRun],
     lookup: &mut HashMap<FramePreparedRunLookupKey, FramePreparedRun>,
+    by_slot: &mut HashMap<(RenderSpaceId, bool, usize), FramePreparedRun>,
 ) {
     lookup.clear();
     lookup.reserve(runs.len());
+    by_slot.clear();
+    by_slot.reserve(runs.len());
     for &run in runs {
         let Some(first) = draws.get(run.start as usize) else {
             continue;
@@ -277,6 +284,10 @@ fn populate_renderer_run_lookup(
                 renderable_index: first.renderable_index,
                 instance_id: first.instance_id,
             },
+            run,
+        );
+        by_slot.insert(
+            (first.space_id, first.skinned, first.renderable_index),
             run,
         );
     }
@@ -358,6 +369,43 @@ pub struct FramePreparedRenderables {
     spatial: PreparedSpatialIndex,
     /// Prepared LOD groups resolved against the current draw snapshot.
     lod_groups: Vec<FramePreparedLodGroup>,
+    /// Renderer ordinals referenced by any LOD group, per space.
+    ///
+    /// Refreshing group bounds costs a full run scan of the touched space, which in a single-space
+    /// city world is ~37k runs for a patch of one renderer. Most renderers belong to no LOD group
+    /// at all, so this lets an unaffected patch skip the scan outright. -xlinka
+    lod_member_ordinals: HashMap<RenderSpaceId, HashMap<usize, usize>>,
+    /// Group indices that reference each renderer ordinal, per space.
+    ///
+    /// Refreshing bounds recomputed EVERY group in a touched space. In a city world nearly every
+    /// renderer is an LOD member, so that stayed O(scene) no matter how the members were iterated
+    /// (measured 1814us/call across two failed attempts). Only groups owning a changed renderer can
+    /// have changed bounds. -xlinka
+    lod_groups_by_ordinal: HashMap<(RenderSpaceId, usize), Vec<usize>>,
+    /// Retained run per `(space, skinned, dense renderer index)`, ignoring instance identity.
+    ///
+    /// Backs the stale-row fallback that [`Self::renderer_run_lookup`] cannot answer when the live
+    /// instance id differs or the renderer is brand new. -xlinka
+    renderer_run_by_slot: HashMap<(RenderSpaceId, bool, usize), FramePreparedRun>,
+    /// Runs whose bounds were rewritten in place since the last spatial refit.
+    ///
+    /// A bounds patch never moves a row, so the spatial index only needs these entries and their
+    /// BVH ancestors instead of the full O(scene) sweep. This is the highest-frequency patch in a
+    /// live world: Darkcity6 measured 41.76 bounds-dirty renderers per frame. -xlinka
+    pending_bounds_patch_runs: HashSet<usize>,
+    /// Scene-side signature of what [`Self::lod_groups`] membership was resolved from.
+    ///
+    /// `None` means membership has never been resolved, so any refit must rebuild. Lets a bounds
+    /// refit prove the scene's LOD rows are unchanged and refresh only the cached group AABBs,
+    /// instead of clearing the table and rehashing every prepared run to rebuild membership that
+    /// a transform move cannot have changed. -xlinka
+    lod_membership_signature: Option<u64>,
+    /// Whether stable row/bounds patches should defer spatial and LOD refits until the caller
+    /// finishes its top-level maintenance batch.
+    spatial_lod_refit_batch_active: bool,
+    /// Union of render spaces whose stable row/bounds patches need a deferred spatial and LOD
+    /// refit. Capacity is retained across frames because the same live spaces are commonly dirty.
+    pending_spatial_lod_refit_spaces: HashSet<RenderSpaceId>,
     /// Render context used when resolving material overrides; must match the per-view context.
     render_context: RenderingContext,
     /// Whether this snapshot was built for a context with no draw-prep overrides and can be used by any such context.
@@ -393,6 +441,13 @@ impl FramePreparedRenderables {
         Self {
             active_space_ids: Vec::new(),
             cached_space_draw_ranges: HashMap::new(),
+            lod_member_ordinals: HashMap::new(),
+            lod_groups_by_ordinal: HashMap::new(),
+            renderer_run_by_slot: HashMap::new(),
+            pending_bounds_patch_runs: HashSet::new(),
+            lod_membership_signature: None,
+            spatial_lod_refit_batch_active: false,
+            pending_spatial_lod_refit_spaces: HashSet::new(),
             draws: Vec::new(),
             runs: Vec::new(),
             run_chunks: Vec::new(),
@@ -445,6 +500,7 @@ impl FramePreparedRenderables {
         render_context: RenderingContext,
     ) {
         profiling::scope!("mesh::prepared_renderables_build_for_frame");
+        self.pending_spatial_lod_refit_spaces.clear();
         self.render_context = render_context;
         self.active_space_ids.clear();
         self.cached_space_draw_ranges.clear();
@@ -533,6 +589,13 @@ impl FramePreparedRenderables {
     where
         S: WorldMeshSceneRead + ?Sized,
     {
+        // A structural metadata rebuild refreshes the complete spatial index and LOD table below,
+        // so every stable refit queued before it is superseded. Keep the batch active: a later
+        // stable patch in the same top-level prepare still needs one final flush.
+        self.pending_spatial_lod_refit_spaces.clear();
+        // Run indices are positional, and this re-lays them. Anything accumulated against the old
+        // layout is meaningless now, and the full rebuild below supersedes it anyway.
+        self.pending_bounds_patch_runs.clear();
         self.refresh_cached_space_draw_ranges();
         self.material_property_key_signature = populate_runs_and_material_keys(
             &self.draws,
@@ -550,7 +613,12 @@ impl FramePreparedRenderables {
             &mut self.run_chunks,
             PREPARED_RUN_CHUNK_DRAW_TARGET,
         );
-        populate_renderer_run_lookup(&self.draws, &self.runs, &mut self.renderer_run_lookup);
+        populate_renderer_run_lookup(
+            &self.draws,
+            &self.runs,
+            &mut self.renderer_run_lookup,
+            &mut self.renderer_run_by_slot,
+        );
         populate_particle_renderer_draw_lookup(
             &self.draws,
             &mut self.particle_renderer_draw_lookup,
@@ -615,9 +683,21 @@ impl FramePreparedRenderables {
 
     /// Clones a finalized base snapshot as a context-specialized prepared overlay.
     pub(super) fn clone_for_context_overlay(&self, render_context: RenderingContext) -> Self {
+        debug_assert!(
+            !self.spatial_lod_refit_batch_active
+                && self.pending_spatial_lod_refit_spaces.is_empty(),
+            "context overlays must clone a finalized prepared snapshot"
+        );
         Self {
             active_space_ids: self.active_space_ids.clone(),
             cached_space_draw_ranges: self.cached_space_draw_ranges.clone(),
+            lod_member_ordinals: self.lod_member_ordinals.clone(),
+            lod_groups_by_ordinal: self.lod_groups_by_ordinal.clone(),
+            renderer_run_by_slot: self.renderer_run_by_slot.clone(),
+            pending_bounds_patch_runs: HashSet::new(),
+            lod_membership_signature: self.lod_membership_signature,
+            spatial_lod_refit_batch_active: false,
+            pending_spatial_lod_refit_spaces: HashSet::new(),
             draws: self.draws.clone(),
             runs: self.runs.clone(),
             run_chunks: self.run_chunks.clone(),
@@ -715,6 +795,9 @@ impl FramePreparedRenderables {
 
     /// Starts a retained render-world snapshot rebuild, preserving backing buffer capacity.
     pub(super) fn begin_cached_rebuild(&mut self, render_context: RenderingContext) {
+        // The rebuilt metadata will cover the complete replacement snapshot. Do not carry stable
+        // refits for the old draw layout into it.
+        self.pending_spatial_lod_refit_spaces.clear();
         self.render_context = render_context;
         self.previous_draws.clear();
         std::mem::swap(&mut self.draws, &mut self.previous_draws);
@@ -820,32 +903,14 @@ impl FramePreparedRenderables {
         };
         let start = run.start as usize;
         let end = run.end as usize;
+        for run_index in self.run_indices_for_draw_range(&(start..end)) {
+            self.pending_bounds_patch_runs.insert(run_index);
+        }
         if let Some(draws) = self.draws.get_mut(start..end) {
             for draw in draws {
                 draw.cull_geometry = cull_geometry;
             }
         }
-    }
-
-    /// Refits cached spatial data and rebuilds LOD metadata after dynamic bounds changed.
-    ///
-    /// Prepared LOD groups cache the union of their renderer AABBs, so updating draw-row cull
-    /// geometry without rebuilding them leaves LOD selection on stale bounds even when the
-    /// spatial index itself was refit.
-    pub(super) fn refit_cached_spatial_and_lods_for_spaces<S, I>(
-        &mut self,
-        scene: &S,
-        space_ids: I,
-    ) -> usize
-    where
-        S: WorldMeshSceneRead + ?Sized,
-        I: IntoIterator<Item = RenderSpaceId>,
-    {
-        let spatial_refit_count = self
-            .spatial
-            .refit_spaces(&self.draws, &self.runs, space_ids);
-        self.rebuild_lod_groups(Some(scene));
-        spatial_refit_count
     }
 
     /// Re-expands and patches exact static/skinned renderer ranges.
@@ -1042,7 +1107,8 @@ impl FramePreparedRenderables {
     where
         S: WorldMeshSceneRead + ?Sized,
     {
-        let mut replacements = Vec::new();
+        profiling::scope!("mesh::prepared_renderables::sync_particle_rows");
+        let mut replacements = Vec::with_capacity(self.active_space_ids.len());
         for &space_id in &self.active_space_ids {
             let Some(old_range) = self.cached_particle_draw_range_for_space(space_id) else {
                 continue;
@@ -1080,6 +1146,7 @@ impl FramePreparedRenderables {
     where
         S: WorldMeshSceneRead + ?Sized,
     {
+        profiling::scope!("mesh::prepared_renderables::patch_context_override");
         let mesh_patch =
             self.patch_mesh_renderers(scene, mesh_pool, render_context, mesh_renderers);
         let particle_patch = self.patch_particle_renderers(
@@ -1111,17 +1178,18 @@ impl FramePreparedRenderables {
         &self,
         dirty: RenderWorldRendererDirty,
     ) -> Option<Range<usize>> {
+        // Was a linear find_map over every retained run. It runs whenever the exact instance-id
+        // lookup misses, which is every newly added renderer, so in a streaming city it was an
+        // O(scene) scan per addition. The slot-keyed index answers the same question in O(1).
         let skinned = matches!(dirty.kind, RenderWorldRendererKind::Skinned);
-        self.renderer_run_lookup.iter().find_map(|(key, run)| {
-            (key.space_id == dirty.space_id
-                && key.skinned == skinned
-                && key.renderable_index == dirty.renderable_index
-                && self
-                    .draws
-                    .get(run.start as usize)
-                    .is_some_and(|draw| draw.particle_draw.kind == ParticleDrawKind::None))
+        let run = self
+            .renderer_run_by_slot
+            .get(&(dirty.space_id, skinned, dirty.renderable_index))
+            .copied()?;
+        self.draws
+            .get(run.start as usize)
+            .is_some_and(|draw| draw.particle_draw.kind == ParticleDrawKind::None)
             .then_some(run.start as usize..run.end as usize)
-        })
     }
 
     fn mesh_renderer_insertion_index(
@@ -1141,7 +1209,7 @@ impl FramePreparedRenderables {
             let follows = if skinned {
                 draw.skinned && draw.renderable_index > renderable_index
             } else {
-                draw.skinned || (!draw.skinned && draw.renderable_index > renderable_index)
+                draw.skinned || draw.renderable_index > renderable_index
             };
             if follows {
                 return draw_index;
@@ -1158,6 +1226,7 @@ impl FramePreparedRenderables {
     where
         S: WorldMeshSceneRead + ?Sized,
     {
+        profiling::scope!("mesh::prepared_renderables::apply_range_replacements");
         if replacements.is_empty() {
             return PreparedRangePatchStats::default();
         }
@@ -1224,14 +1293,26 @@ impl FramePreparedRenderables {
             .collect::<HashSet<_>>();
 
         if stable_in_place {
+            // A stable patch rewrites rows without moving run boundaries, so the runs covering each
+            // replaced draw range are exactly the ones whose bounds can have changed. Naming them
+            // lets the spatial refit skip its full sweep of the space.
+            let mut changed_runs = HashSet::new();
+            for replacement in &replacements {
+                for run_index in self.run_indices_for_draw_range(&replacement.old_range) {
+                    changed_runs.insert(run_index);
+                }
+            }
             for replacement in replacements {
                 let old = &mut self.draws[replacement.old_range];
                 for (destination, fresh) in old.iter_mut().zip(replacement.fresh) {
                     *destination = fresh;
                 }
             }
-            let spatial_refit_count =
-                self.refit_cached_spatial_and_lods_for_spaces(scene, touched_spaces);
+            let spatial_refit_count = self.refit_cached_spatial_and_lods_for_spaces_with_runs(
+                scene,
+                touched_spaces,
+                Some(&changed_runs),
+            );
             return PreparedRangePatchStats {
                 range_count,
                 draw_count,
@@ -1243,8 +1324,7 @@ impl FramePreparedRenderables {
         }
 
         for replacement in replacements.into_iter().rev() {
-            self.draws
-                .splice(replacement.old_range, replacement.fresh.into_iter());
+            self.draws.splice(replacement.old_range, replacement.fresh);
         }
         self.refresh_runs_material_keys_and_chunks(Some(scene));
         PreparedRangePatchStats {
@@ -1255,6 +1335,41 @@ impl FramePreparedRenderables {
             structural_rebuild: true,
             spatial_refit_count: 0,
         }
+    }
+
+    /// Run indices whose draw span intersects `range`.
+    ///
+    /// `runs` is ascending and disjoint over draw indices, so the first candidate is found by
+    /// binary search and the rest are walked until the range is passed.
+    fn run_indices_for_draw_range(&self, range: &Range<usize>) -> Vec<usize> {
+        if range.is_empty() {
+            return Vec::new();
+        }
+        let mut found = Vec::new();
+        let start = self
+            .runs
+            .partition_point(|run| (run.end as usize) <= range.start);
+        for (offset, run) in self.runs[start..].iter().enumerate() {
+            if run.start as usize >= range.end {
+                break;
+            }
+            found.push(start + offset);
+        }
+        found
+    }
+
+    /// Maps run indices to the `(space, renderer ordinal)` keys their rows belong to.
+    fn ordinals_for_runs(&self, runs: &HashSet<usize>) -> HashSet<(RenderSpaceId, usize)> {
+        let mut keys = HashSet::with_capacity(runs.len());
+        for &run_index in runs {
+            let Some(run) = self.runs.get(run_index) else {
+                continue;
+            };
+            if let Some(draw) = self.draws.get(run.start as usize) {
+                keys.insert((draw.space_id, draw.renderer_ordinal));
+            }
+        }
+        keys
     }
 
     /// Returns the particle suffix range for one active prepared space.
@@ -1318,6 +1433,10 @@ fn prepared_patch_shape_is_stable(old: &[FramePreparedDraw], fresh: &[FramePrepa
                 && old.skinned == fresh.skinned
                 && old.renderable_index == fresh.renderable_index
                 && old.instance_id == fresh.instance_id
+                // Overlay rows are excluded from the prepared BVH and use different LOD
+                // projection semantics. Treat a layer transition as structural so both caches are
+                // rebuilt instead of trying to refit an entry whose indexing class changed.
+                && old.is_overlay == fresh.is_overlay
                 && old.particle_draw.kind == fresh.particle_draw.kind
                 && old.material_asset_id == fresh.material_asset_id
                 && old.property_block_id == fresh.property_block_id
@@ -1330,45 +1449,6 @@ fn prepared_patch_shape_is_stable(old: &[FramePreparedDraw], fresh: &[FramePrepa
                         .and_then(|geometry| geometry.world_aabb)
                         .is_some()
         })
-}
-
-/// Assigns stable scene-table renderer ordinals to every prepared draw row.
-fn populate_renderer_ordinals_from_scene(
-    draws: &mut [FramePreparedDraw],
-    scene: &(impl SceneMeshRendererRead + ?Sized),
-) {
-    for draw in draws {
-        let static_count = scene
-            .static_mesh_renderers(draw.space_id)
-            .map_or(0, |renderers| renderers.len());
-        draw.renderer_ordinal = if draw.skinned {
-            static_count.saturating_add(draw.renderable_index)
-        } else {
-            draw.renderable_index
-        };
-    }
-}
-
-/// Assigns dense renderer ordinals per render space when no scene table is available.
-fn populate_renderer_ordinals_from_runs(
-    draws: &mut [FramePreparedDraw],
-    runs: &[FramePreparedRun],
-) {
-    let mut next_by_space: HashMap<RenderSpaceId, usize> = HashMap::new();
-    for run in runs {
-        let start = run.start as usize;
-        let end = run.end as usize;
-        let Some(first) = draws.get(start) else {
-            continue;
-        };
-        let ordinal = *next_by_space
-            .entry(first.space_id)
-            .and_modify(|next| *next += 1)
-            .or_insert(0);
-        for draw in &mut draws[start..end] {
-            draw.renderer_ordinal = ordinal;
-        }
-    }
 }
 
 #[cfg(test)]

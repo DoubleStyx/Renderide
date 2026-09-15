@@ -166,6 +166,10 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_phase_gra
 }
 
 /// Records one named world-mesh phase using the supplied per-view resource identity.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the graph raster entry point mirrors the render-graph callback state and keeps resource-view identity explicit"
+)]
 pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_phase_graph_raster_for_view(
     rpass: &mut wgpu::RenderPass<'_>,
     frame: &PassFrameContext<'_, '_>,
@@ -198,6 +202,10 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_phase_gra
 }
 
 /// Records an explicit draw-group slice using the supplied per-view resource identity.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the graph raster entry point mirrors the render-graph callback state and keeps phase resources explicit"
+)]
 pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_groups_graph_raster_for_view(
     rpass: &mut wgpu::RenderPass<'_>,
     frame: &PassFrameContext<'_, '_>,
@@ -249,8 +257,8 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_groups_gr
         }))
     });
     let mut indirect_buffer_guard = indirect_buffer_arc.as_ref().map(|buffer| buffer.lock());
-    let indirect_buffer = indirect_buffer_guard.as_mut().map(|buffer| &mut **buffer);
-    record_world_mesh_forward_groups_graph_raster_with_frame_bind_group(
+    let indirect_buffer = indirect_buffer_guard.as_deref_mut();
+    let recorded = record_world_mesh_forward_groups_graph_raster_with_frame_bind_group(
         rpass,
         frame,
         prepared,
@@ -262,10 +270,17 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_groups_gr
         geometry_arena,
         indirect_buffer,
         gpu_cull,
-    )
+    );
+    drop(indirect_buffer_guard);
+    drop(arena_guard);
+    recorded
 }
 
 /// Records an explicit draw-group slice with a caller-selected `@group(0)` bind group.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the low-level raster helper exposes already-resolved graph resources so transparent and overlay callers can share one hot path"
+)]
 pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_groups_graph_raster_with_frame_bind_group(
     rpass: &mut wgpu::RenderPass<'_>,
     frame: &PassFrameContext<'_, '_>,
@@ -450,7 +465,9 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_normal_gr
             runs: &runs,
             normal_pipelines: pipelines,
         });
+        drop(buffer);
     }
+    drop(arena_guard);
     #[cfg(feature = "tracy-gpu")]
     rpass.pop_debug_group();
     true

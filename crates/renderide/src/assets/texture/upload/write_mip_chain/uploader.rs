@@ -94,7 +94,7 @@ pub struct TextureMipUploadStep<'a> {
     /// Upload record.
     pub upload: &'a SetTexture2DData,
     /// Payload (`&raw[..upload.data.length]`).
-    pub payload: &'a Arc<Vec<u8>>,
+    pub payload: &'a Arc<[u8]>,
 }
 
 #[derive(Clone, Debug)]

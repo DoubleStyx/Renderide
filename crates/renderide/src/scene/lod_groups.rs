@@ -123,6 +123,8 @@ pub(in crate::scene) fn apply_lod_group_renderables_update_extracted(
 ) {
     profiling::scope!("scene::apply_lod_groups");
 
+    // Announce the mutation so consumers never have to hash the table to discover it.
+    space.lod_generation = space.lod_generation.wrapping_add(1);
     swap_remove_dense_indices(&mut space.lod_groups, &extracted.removals);
     for node_id in non_negative_i32s(&extracted.additions) {
         space.lod_groups.push(LodGroupEntry {
@@ -280,6 +282,27 @@ mod tests {
     /// Host packed id for a skinned renderer.
     fn packed_skinned(index: i32) -> i32 {
         (1i32 << 30) | index
+    }
+
+    #[test]
+    fn applying_a_lod_update_announces_the_mutation() {
+        // Consumers detect membership changes by comparing this version instead of hashing every
+        // group's every renderer. A mutation that fails to bump it leaves LOD selection silently
+        // stale, which is invisible until something pops at the wrong distance. -xlinka
+        let mut space = RenderSpaceState::default();
+        let before = space.lod_generation;
+        apply_lod_group_renderables_update_extracted(
+            &mut space,
+            &ExtractedLodGroupRenderablesUpdate {
+                additions: vec![7, -1],
+                ..Default::default()
+            },
+            0,
+        );
+        assert_ne!(
+            space.lod_generation, before,
+            "a LOD group mutation must bump the generation"
+        );
     }
 
     #[test]

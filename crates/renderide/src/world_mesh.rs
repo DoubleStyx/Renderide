@@ -30,7 +30,8 @@ pub use draw_prep::{
     DrawCollectionMaterialInputs, DrawCollectionSceneAssets, DrawCollectionViewInputs,
     FramePreparedRenderables, RenderWorld, RenderWorldMaintenanceStats, ViewLayerPolicy,
     ViewRenderSpaceScope, WorldMeshCommandCacheStats, WorldMeshDrawArrangeParallelism,
-    WorldMeshDrawCollectParallelism, WorldMeshDrawItem, draw_filter_from_camera_entry,
+    WorldMeshDrawCollectParallelism, WorldMeshDrawItem, WorldMeshDrawList,
+    draw_filter_from_camera_entry,
 };
 pub(crate) use draw_prep::{
     QueuedWorldMeshDraws, WorldMeshCommandCache, fingerprint_world_mesh_draws,

@@ -46,7 +46,9 @@ pub struct CommandEncodingHudSnapshot {
     pub auto_in_view_record_admitted: bool,
     /// Whether the effective recording path splits work inside one view.
     pub in_view_record_admitted: bool,
-    /// Whether the single-swapchain encoder path was selected or why it was unavailable.
+    /// Whether the combined single-view encoder path was selected or why it was unavailable.
+    ///
+    /// The field name is retained for capture/HUD compatibility.
     pub single_swapchain_encoder_status: String,
     /// Scheduled frame-global pass count.
     pub frame_global_passes: usize,

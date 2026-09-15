@@ -165,6 +165,12 @@ pub struct DrawCollectionViewInputs<'a> {
     ///
     /// Transparent, deformed, dynamic, and overlay draws remain on the CPU visibility path.
     pub retain_gpu_static_candidates: bool,
+    /// Collect only draws that can participate in shadow-caster planning.
+    ///
+    /// Prepared renderer runs whose shared [`crate::shared::ShadowCastMode`] is `Off` can be
+    /// discarded before transform, mesh, material, and draw-item work. Material-dependent caster
+    /// policy remains a downstream filter because it cannot be decided at renderer-run scope.
+    pub shadow_caster_only: bool,
     /// Camera cull inputs consumed only by LOD group selection when [`Self::culling`] is unset.
     pub lod_selection_culling: Option<&'a WorldMeshCullInput<'a>>,
     /// Unity-style mesh LOD bias multiplier for relative screen-height selection.
@@ -181,6 +187,13 @@ pub struct DrawCollectionViewInputs<'a> {
     pub layer_policy: ViewLayerPolicy,
     /// Optional frame reflection-probe selector used to choose the set of specular IBL probes to use per draw.
     pub reflection_probes: Option<&'a ReflectionProbeFrameSelection>,
+    /// Resolve `world_aabb` on collected draws even when this view does no CPU culling.
+    ///
+    /// Shadow caster collection needs the bounds but must never camera-frustum-cull, so it cannot
+    /// get them by setting [`Self::culling`]. Without this the caster draws carry `world_aabb:
+    /// None`, every per-cascade visibility test trivially passes, and the shadow cull silently
+    /// does nothing. -xlinka
+    pub needs_world_bounds: bool,
 }
 
 /// Frame-level caches shared by all draw collection workers for one view.
@@ -267,6 +280,8 @@ struct CollectState<'a> {
     lod_visibility: &'a LodVisibility,
     /// Active render spaces relevant to this view.
     space_ids: &'a [RenderSpaceId],
+    /// The spatial broadphase already accepted exact finite bounds for eligible prepared runs.
+    spatial_frustum_pretested: bool,
 }
 
 /// Prepared draw collection state derived once per view before chunk dispatch.
@@ -293,6 +308,7 @@ impl PreparedCollectionState<'_> {
             filter_masks: &self.filter_masks,
             lod_visibility: &self.lod_visibility,
             space_ids: &self.space_ids,
+            spatial_frustum_pretested: false,
         }
     }
 }
@@ -397,9 +413,17 @@ impl QueuedWorldMeshDraws {
 
     /// Packages deterministic collection order without the main-view phase sort.
     pub(crate) fn into_unarranged_collection(self) -> WorldMeshDrawCollection {
+        profiling::scope!("mesh::into_unarranged_collection");
         let items = flatten_draw_chunks(self.chunks, true);
+        // The Vec -> Arc<[T]> handoff reallocates and memcpys every item, which on an unculled
+        // shadow caster set is tens of MB a frame. It used to hide inside the sort scope and read
+        // as "sorting is expensive" when nothing was being sorted. -xlinka
+        let items: crate::world_mesh::WorldMeshDrawList = {
+            profiling::scope!("mesh::into_unarranged_collection::share_items");
+            std::sync::Arc::new(items)
+        };
         WorldMeshDrawCollection {
-            items: items.into(),
+            items,
             draws_pre_cull: self.draws_pre_cull,
             draws_culled: self.draws_culled,
             draws_hi_z_culled: self.draws_hi_z_culled,
@@ -424,7 +448,7 @@ impl QueuedWorldMeshDraws {
             }
         };
         WorldMeshDrawCollection {
-            items: items.into(),
+            items: std::sync::Arc::new(items),
             draws_pre_cull: self.draws_pre_cull,
             draws_culled: self.draws_culled,
             draws_hi_z_culled: self.draws_hi_z_culled,
@@ -482,6 +506,7 @@ fn queue_draws_without_prepared_snapshot(
             filter_masks: &filter_masks,
             lod_visibility: &lod_visibility,
             space_ids: &space_ids,
+            spatial_frustum_pretested: false,
         },
     );
     merge_collected_chunks(collected, cap_hint)
@@ -526,6 +551,67 @@ fn resolve_scene_walk_space_ids(ctx: &DrawCollectionInputs<'_>) -> Vec<RenderSpa
 /// Returns `None` when any context lacks a prepared snapshot or material cache, letting callers
 /// fall back to the general per-view queue path. When the combined prepared work is large enough,
 /// this avoids spawning one Rayon job per view that then serially walks every prepared chunk.
+/// Collects prepared draws unless `admit` recognises the fingerprint of what would be produced.
+///
+/// The per-view state (space ids, filter masks, LOD selection) is built ONCE and reused for both
+/// the fingerprint and the collection, so a miss costs nothing extra. Returns `None` when `admit`
+/// declines, meaning the caller reuses its cached result. -xlinka
+pub(crate) fn queue_prepared_draws_for_views_with_reuse(
+    contexts: &[DrawCollectionInputs<'_>],
+    parallelism: WorldMeshDrawCollectParallelism,
+    content_version: u64,
+    admit: impl FnOnce(u64) -> bool,
+) -> Option<Vec<QueuedWorldMeshDraws>> {
+    profiling::scope!("mesh::queue_prepared_draws_for_views_with_reuse");
+    if contexts.is_empty() {
+        return Some(Vec::new());
+    }
+    let Some(states) = build_prepared_collection_states(contexts) else {
+        return Some(
+            contexts
+                .iter()
+                .map(|ctx| queue_draws_without_prepared_snapshot(ctx, parallelism))
+                .collect(),
+        );
+    };
+    let fingerprint = prepared_collection_fingerprint(contexts, &states, content_version);
+    if !admit(fingerprint) {
+        return None;
+    }
+    Some(collect_from_prepared_states(contexts, states, parallelism))
+}
+
+/// Content fingerprint of what a prepared collection would produce.
+fn prepared_collection_fingerprint(
+    contexts: &[DrawCollectionInputs<'_>],
+    states: &[PreparedCollectionState<'_>],
+    content_version: u64,
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = ahash::AHasher::default();
+    // The prepared snapshot is patched IN PLACE for stable edits, so its address is not a content
+    // key. `content_version` carries the render world's identity and static generation, which is
+    // what moves when geometry or a transform changes.
+    content_version.hash(&mut hasher);
+    states.len().hash(&mut hasher);
+    for (ctx, state) in contexts.iter().zip(states.iter()) {
+        state.space_ids.hash(&mut hasher);
+        state.cap_hint.hash(&mut hasher);
+        let mut masks = state.filter_masks.iter().collect::<Vec<_>>();
+        masks.sort_unstable_by_key(|(space_id, _)| space_id.0);
+        masks.len().hash(&mut hasher);
+        for (space_id, mask) in masks {
+            space_id.0.hash(&mut hasher);
+            mask.hash(&mut hasher);
+        }
+        state.lod_visibility.hash_selection(&mut hasher);
+        (ctx.view.render_context as u8).hash(&mut hasher);
+        ctx.view.shadow_caster_only.hash(&mut hasher);
+        ctx.view.mesh_lod_bias.to_bits().hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
 pub(crate) fn queue_prepared_draws_for_views_with_parallelism(
     contexts: &[DrawCollectionInputs<'_>],
     parallelism: WorldMeshDrawCollectParallelism,
@@ -534,12 +620,24 @@ pub(crate) fn queue_prepared_draws_for_views_with_parallelism(
     if contexts.is_empty() {
         return Vec::new();
     }
-    let Some(states) = build_prepared_collection_states(contexts) else {
+    let Some(states) = ({
+        profiling::scope!("mesh::queue_prepared_draws_for_views::build_states");
+        build_prepared_collection_states(contexts)
+    }) else {
         return contexts
             .iter()
             .map(|ctx| queue_draws_without_prepared_snapshot(ctx, parallelism))
             .collect();
     };
+    collect_from_prepared_states(contexts, states, parallelism)
+}
+
+/// Runs prepared chunk collection for already-built per-view states.
+fn collect_from_prepared_states(
+    contexts: &[DrawCollectionInputs<'_>],
+    states: Vec<PreparedCollectionState<'_>>,
+    parallelism: WorldMeshDrawCollectParallelism,
+) -> Vec<QueuedWorldMeshDraws> {
     let task_count = states
         .iter()
         .map(|state| state.prepared.run_chunks().len())
@@ -838,6 +936,10 @@ fn collect_prepared_spatial_chunks(
     state: CollectState<'_>,
 ) -> WorldMeshCollectedChunks {
     profiling::scope!("mesh::collect_prepared::spatial_candidates");
+    let state = CollectState {
+        spatial_frustum_pretested: true,
+        ..state
+    };
     let draws = prepared.draws();
     let candidates =
         prepared.spatial_run_candidates(state.space_ids, ctx.scene_assets.scene, ctx.view.culling);

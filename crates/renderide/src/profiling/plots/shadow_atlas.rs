@@ -14,6 +14,9 @@ pub struct ShadowCacheProfileSample {
     pub avoided_visibility_group_tests: usize,
     pub avoided_visibility_draw_tests: usize,
     pub avoided_content_hash_draws: usize,
+    pub cascade_hold_hits: usize,
+    pub cascade_hold_age_misses: usize,
+    pub cascade_hold_coverage_misses: usize,
     pub indirect_hit: bool,
     pub avoided_indirect_layers: usize,
     pub avoided_indirect_commands: usize,
@@ -66,6 +69,26 @@ pub fn plot_shadow_static_split(
     );
 }
 
+/// Emits why layers recorded in full, indexed by `SHADOW_FULL_REASON_*`.
+///
+/// Counts, not a last-value code: a frame records many layers and each can fail reuse for its own
+/// reason, so the useful signal is the distribution across one frame.
+pub fn plot_shadow_full_redraw_reasons(reasons: [usize; 5]) {
+    tracy_plot!(
+        "shadow_atlas::full_reason_params_changed",
+        reasons[1] as f64
+    );
+    tracy_plot!("shadow_atlas::full_reason_not_reusable", reasons[2] as f64);
+    tracy_plot!(
+        "shadow_atlas::full_reason_content_changed",
+        reasons[3] as f64
+    );
+    tracy_plot!(
+        "shadow_atlas::full_reason_no_static_store",
+        reasons[4] as f64
+    );
+}
+
 /// Emits exact retained shadow-planning cache counters.
 pub fn plot_shadow_cache(sample: ShadowCacheProfileSample) {
     tracy_plot!(
@@ -103,6 +126,18 @@ pub fn plot_shadow_cache(sample: ShadowCacheProfileSample) {
     tracy_plot!(
         "shadow_atlas::avoided_content_hash_draws",
         sample.avoided_content_hash_draws as f64
+    );
+    tracy_plot!(
+        "shadow_atlas::cascade_hold_hits",
+        sample.cascade_hold_hits as f64
+    );
+    tracy_plot!(
+        "shadow_atlas::cascade_hold_age_misses",
+        sample.cascade_hold_age_misses as f64
+    );
+    tracy_plot!(
+        "shadow_atlas::cascade_hold_coverage_misses",
+        sample.cascade_hold_coverage_misses as f64
     );
     tracy_plot!(
         "shadow_atlas::indirect_plan_cache_hit",

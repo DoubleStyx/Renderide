@@ -9,9 +9,14 @@
 //! holds still. Without the split, one avatar costs a full redraw of every caster in every layer it
 //! is visible to.
 //!
-//! The store is 1:1 with the atlas: store layer N backs atlas layer N. That costs a second atlas
-//! worth of VRAM, so allocation is capped by [`STATIC_STORE_VRAM_BUDGET_BYTES`] and declines when
-//! the atlas is too big, leaving those layers to redraw in full.
+//! Store layer N backs atlas layer N, but the store is only as deep as
+//! [`STATIC_STORE_VRAM_BUDGET_BYTES`] affords. A big atlas gets a *partial* store covering its low
+//! layers rather than no store at all: atlas layers past the cap simply redraw in full, which is
+//! what they would have done anyway. This matters because the atlas is sized by the session's
+//! high-water layer count while a typical frame lights only a fraction of it, so demanding a full
+//! 1:1 mirror threw away the cache for every layer over a handful the store could easily have held.
+//! [`super::super::frame_resource_manager`]'s layer cache hands out the lowest free atlas layer to
+//! keep the live set inside that covered range.
 
 use std::sync::Arc;
 
@@ -20,10 +25,21 @@ use crate::embedded_shaders::embedded_wgsl;
 /// Largest static store worth holding, in bytes.
 ///
 /// A 2048 atlas over 13 layers of Depth32Float is already 218 MB, and the win does not justify
-/// pushing a VR user into VRAM eviction. Past this the store declines and layers redraw in full.
+/// pushing a VR user into VRAM eviction. Past this the store stops growing and the uncovered
+/// layers redraw in full.
 const STATIC_STORE_VRAM_BUDGET_BYTES: u64 = 192 * 1024 * 1024;
 
-/// Per-layer cached static depth, 1:1 with the shadow atlas layers.
+/// Store depth affordable for an atlas of this shape, capped at the atlas's own layer count.
+pub(super) fn budgeted_layers(resolution: u32, layers: u32, format: wgpu::TextureFormat) -> u32 {
+    let per_layer = static_store_bytes(resolution, 1, format);
+    if resolution == 0 || layers == 0 || per_layer == 0 {
+        return 0;
+    }
+    let affordable = u32::try_from(STATIC_STORE_VRAM_BUDGET_BYTES / per_layer).unwrap_or(u32::MAX);
+    layers.min(affordable)
+}
+
+/// Per-layer cached static depth for the atlas's low layers.
 pub(super) struct ShadowStaticStore {
     #[expect(dead_code, reason = "kept alive for the views borrowed from it")]
     texture: Arc<wgpu::Texture>,
@@ -36,7 +52,9 @@ pub(super) struct ShadowStaticStore {
 }
 
 impl ShadowStaticStore {
-    /// Allocates a store matching the atlas, or [`None`] when it would not fit the budget.
+    /// Allocates a store `layers` deep, or [`None`] when even one layer is unaffordable.
+    ///
+    /// `layers` is the already-budgeted depth from [`budgeted_layers`], not the atlas layer count.
     pub(super) fn new(
         device: &wgpu::Device,
         resolution: u32,
@@ -60,7 +78,6 @@ impl ShadowStaticStore {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         }));
-        
 
         let layout = restore_bind_group_layout(device);
         let mut layer_views = Vec::with_capacity(layers as usize);
@@ -95,9 +112,17 @@ impl ShadowStaticStore {
         })
     }
 
-    /// Whether this store still matches the atlas it backs.
+    /// Whether this store is still the right shape for the atlas it backs.
+    ///
+    /// `layers` is the budgeted depth, so a store capped below the atlas still counts as matching
+    /// and is not thrown away and rebuilt every frame.
     pub(super) const fn matches(&self, resolution: u32, layers: u32) -> bool {
         self.resolution == resolution && self.layers == layers
+    }
+
+    /// Atlas layers this store covers; layers at or past this redraw in full.
+    pub(super) const fn layers(&self) -> u32 {
+        self.layers
     }
 
     /// Render target for one layer's static depth.
@@ -206,7 +231,31 @@ pub(super) fn create_restore_pipeline(
 
 #[cfg(test)]
 mod tests {
-    use super::{STATIC_STORE_VRAM_BUDGET_BYTES, static_store_bytes, static_store_fits_budget};
+    use super::{
+        STATIC_STORE_VRAM_BUDGET_BYTES, budgeted_layers, static_store_bytes,
+        static_store_fits_budget,
+    };
+
+    #[test]
+    fn a_deep_atlas_gets_partial_coverage_instead_of_none() {
+        // 98 layers at 1170 square is ~536 MB, the shape FROGBOG settled on. The store used to
+        // decline it outright and every layer redrew in full for the rest of the session.
+        let format = wgpu::TextureFormat::Depth32Float;
+        let covered = budgeted_layers(1170, 98, format);
+
+        assert!(covered > 0, "a deep atlas must still get some coverage");
+        assert!(covered < 98, "coverage must stop at the budget");
+        assert!(static_store_fits_budget(1170, covered, format));
+        assert!(static_store_bytes(1170, covered + 1, format) > STATIC_STORE_VRAM_BUDGET_BYTES);
+    }
+
+    #[test]
+    fn an_atlas_inside_the_budget_is_covered_whole() {
+        assert_eq!(
+            budgeted_layers(2048, 7, wgpu::TextureFormat::Depth32Float),
+            7
+        );
+    }
 
     #[test]
     fn depth32_store_bytes_match_the_atlas_footprint() {

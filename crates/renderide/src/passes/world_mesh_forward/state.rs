@@ -6,7 +6,7 @@ use crate::materials::{MaterialPipelineDesc, ShaderPermutation};
 use crate::render_graph::blackboard::blackboard_slot;
 use crate::skybox::PreparedSkybox;
 use crate::world_mesh::{
-    HiZTemporalState, InstancePlan, WorldMeshCullProjParams, WorldMeshDrawItem,
+    HiZTemporalState, InstancePlan, WorldMeshCullProjParams, WorldMeshDrawList,
     WorldMeshHelperNeeds,
 };
 
@@ -51,7 +51,7 @@ pub(crate) struct WorldMeshForwardPipelineState {
 /// Per-view forward-pass preparation shared by split graph nodes.
 pub(crate) struct PreparedWorldMeshForwardFrame {
     /// Sorted world mesh draw items for this view.
-    pub draws: Arc<[WorldMeshDrawItem]>,
+    pub draws: WorldMeshDrawList,
     /// Per-view [`InstancePlan`]: per-draw slab layout plus phase-grouped draw submissions.
     pub plan: Arc<InstancePlan>,
     /// Pipeline format/sample/multiview state.

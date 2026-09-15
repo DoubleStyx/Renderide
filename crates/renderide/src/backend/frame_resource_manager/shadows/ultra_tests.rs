@@ -184,6 +184,45 @@ fn custom_shadow_resolution_override_bypasses_quality_light_type_cap() {
 }
 
 #[test]
+fn a_clamped_atlas_resolution_does_not_force_a_permanent_full_redraw() {
+    // The planner signs each layer with the resolution its light REQUESTS, before the atlas is
+    // sized. Finalize used to re-sign after clamping `view.resolution` down to the allocated
+    // atlas, storing a value the next frame's planner could never reproduce, so a clamped layer
+    // reported params_changed and redrew in full forever.
+    let mut manager = super::FrameResourceManager::new();
+    let lights = &mut manager
+        .per_view_lights
+        .get_or_insert_with(ViewId::Main, PreparedViewLights::default)
+        .lights;
+    let mut custom_spot = shadowed_light(LightType::Spot);
+    custom_spot.shadow_map_resolution = 512;
+    custom_spot.position = [30.0, 4.0, 5.0];
+    lights.push(custom_spot);
+    lights.push(shadowed_light(LightType::Spot));
+    let draw_plan = prefetched_plan(vec![pbs_draw(1, ShadowCastMode::On)]);
+    let quality = HostShadowQuality::from_quality_config(&QualityConfig {
+        shadow_resolution: ShadowResolutionMode::Ultra,
+        ..Default::default()
+    });
+
+    manager.prepare_shadow_frame_for_views(quality, None, [(ViewId::Main, &draw_plan)]);
+    // Atlas allocated smaller than the ultra light asked for, so layer 1 clamps.
+    manager.finalize_shadow_frame_after_atlas_sync(1024, true);
+    assert_eq!(manager.shadow_frame_plan().render_views[1].resolution, 1024);
+
+    manager.prepare_shadow_frame_for_views(quality, None, [(ViewId::Main, &draw_plan)]);
+
+    let plan = manager.shadow_frame_plan();
+    for (index, view) in plan.render_views.iter().enumerate() {
+        assert_ne!(
+            view.full_redraw_reason,
+            super::SHADOW_FULL_REASON_PARAMS_CHANGED,
+            "layer {index} still reports changed light parameters on an unchanged frame"
+        );
+    }
+}
+
+#[test]
 fn applying_actual_atlas_resolution_updates_shadow_metadata() {
     let mut manager = super::FrameResourceManager::new();
     let lights = &mut manager

@@ -12,12 +12,27 @@ use crate::cpu_parallelism::{
     RELEVANCE_PACKET_MIN_ITEMS, admit_relevance_items, current_reference_worker_count,
     record_parallel_admission,
 };
-use crate::materials::ShaderPermutation;
 use crate::materials::host_data::MaterialDictionary;
 use crate::materials::{MaterialPipelinePropertyIds, MaterialRouter};
+use crate::materials::{RasterFrontFace, RasterPrimitiveTopology, ShaderPermutation};
 use crate::world_mesh::FramePreparedRenderables;
 
-use super::resolve::{MaterialResolveCtx, ResolvedMaterialBatch, resolve_material_batch};
+use super::resolve::{
+    CACHED_BATCH_KEY_HASH_VARIANTS, MaterialResolveCtx, ResolvedMaterialBatch,
+    cached_batch_key_hash_variant_index, cached_batch_key_hash_variants, resolve_material_batch,
+};
+
+type MaterialCacheKey = (i32, Option<i32>);
+
+/// Validation snapshot and recency stamp attached to a resolved material cache row.
+#[derive(Clone, Copy)]
+struct CacheEntryMetadata {
+    material_gen: u64,
+    property_block_gen: u64,
+    router_gen: u64,
+    shader_perm: ShaderPermutation,
+    last_used_frame: u64,
+}
 
 /// Material keys assigned to one parallel material-resolution worker.
 const MATERIAL_RESOLVE_PARALLEL_CHUNK_KEYS: usize = RELEVANCE_PACKET_MIN_ITEMS;
@@ -32,6 +47,8 @@ const MATERIAL_CLASSIFY_PARALLEL_MIN_KEYS: usize = MATERIAL_CLASSIFY_PARALLEL_CH
 #[derive(Clone)]
 struct CacheEntry {
     batch: ResolvedMaterialBatch,
+    /// Precomputed hashes for the eight draw-local `(skinned x winding x topology)` variants.
+    batch_key_hashes: [u64; CACHED_BATCH_KEY_HASH_VARIANTS],
     /// Material-side mutation generation at resolve time
     /// (see [`crate::materials::host_data::MaterialPropertyStore::material_generation`]).
     material_gen: u64,
@@ -46,22 +63,38 @@ struct CacheEntry {
 }
 
 impl CacheEntry {
+    /// Builds one cache row and its draw-local batch-key hash variants.
+    fn new(
+        key: MaterialCacheKey,
+        batch: ResolvedMaterialBatch,
+        metadata: CacheEntryMetadata,
+    ) -> Self {
+        let batch_key_hashes = cached_batch_key_hash_variants(key.0, key.1, &batch);
+        Self {
+            batch,
+            batch_key_hashes,
+            material_gen: metadata.material_gen,
+            property_block_gen: metadata.property_block_gen,
+            router_gen: metadata.router_gen,
+            shader_perm: metadata.shader_perm,
+            last_used_frame: metadata.last_used_frame,
+        }
+    }
+
     /// Replaces the resolved batch and validation keys while preserving the hash-map allocation.
     fn refresh(
         &mut self,
+        key: MaterialCacheKey,
         batch: ResolvedMaterialBatch,
-        material_gen: u64,
-        property_block_gen: u64,
-        router_gen: u64,
-        shader_perm: ShaderPermutation,
-        last_used_frame: u64,
+        metadata: CacheEntryMetadata,
     ) {
+        self.batch_key_hashes = cached_batch_key_hash_variants(key.0, key.1, &batch);
         self.batch = batch;
-        self.material_gen = material_gen;
-        self.property_block_gen = property_block_gen;
-        self.router_gen = router_gen;
-        self.shader_perm = shader_perm;
-        self.last_used_frame = last_used_frame;
+        self.material_gen = metadata.material_gen;
+        self.property_block_gen = metadata.property_block_gen;
+        self.router_gen = metadata.router_gen;
+        self.shader_perm = metadata.shader_perm;
+        self.last_used_frame = metadata.last_used_frame;
     }
 }
 
@@ -285,6 +318,7 @@ impl FrameMaterialBatchCache {
     ///
     /// Restricted to `pub(super)` because [`ResolvedMaterialBatch`] is internal to
     /// the world-mesh material resolution module.
+    #[cfg(test)]
     pub(super) fn get(
         &self,
         material_asset_id: i32,
@@ -293,6 +327,20 @@ impl FrameMaterialBatchCache {
         self.entries
             .get(&(material_asset_id, property_block_id))
             .map(|e| &e.batch)
+    }
+
+    /// Returns a resolved material row and the precomputed hash for its draw-local raster variant.
+    pub(super) fn get_with_hash(
+        &self,
+        material_asset_id: i32,
+        property_block_id: Option<i32>,
+        skinned: bool,
+        front_face: RasterFrontFace,
+        primitive_topology: RasterPrimitiveTopology,
+    ) -> Option<(&ResolvedMaterialBatch, u64)> {
+        let entry = self.entries.get(&(material_asset_id, property_block_id))?;
+        let variant = cached_batch_key_hash_variant_index(skinned, front_face, primitive_topology);
+        Some((&entry.batch, entry.batch_key_hashes[variant]))
     }
 
     /// Refreshes the cache from a pre-expanded draw list instead of walking scene renderers.
@@ -546,27 +594,18 @@ impl FrameMaterialBatchCache {
     fn apply_resolved_material_updates(&mut self, updates: Vec<ResolvedMaterialCacheUpdate>) {
         for update in updates {
             let key = (update.material_asset_id, update.property_block_id);
+            let metadata = CacheEntryMetadata {
+                material_gen: update.material_gen,
+                property_block_gen: update.property_block_gen,
+                router_gen: update.router_gen,
+                shader_perm: update.shader_perm,
+                last_used_frame: update.last_used_frame,
+            };
             match self.entries.get_mut(&key) {
-                Some(entry) => entry.refresh(
-                    update.batch,
-                    update.material_gen,
-                    update.property_block_gen,
-                    update.router_gen,
-                    update.shader_perm,
-                    update.last_used_frame,
-                ),
+                Some(entry) => entry.refresh(key, update.batch, metadata),
                 None => {
-                    self.entries.insert(
-                        key,
-                        CacheEntry {
-                            batch: update.batch,
-                            material_gen: update.material_gen,
-                            property_block_gen: update.property_block_gen,
-                            router_gen: update.router_gen,
-                            shader_perm: update.shader_perm,
-                            last_used_frame: update.last_used_frame,
-                        },
-                    );
+                    self.entries
+                        .insert(key, CacheEntry::new(key, update.batch, metadata));
                 }
             }
         }
@@ -610,14 +649,14 @@ impl FrameMaterialBatchCache {
                     ctx.pipeline_property_ids,
                     ctx.shader_perm,
                 );
-                entry.refresh(
-                    batch,
+                let metadata = CacheEntryMetadata {
                     material_gen,
                     property_block_gen,
                     router_gen,
-                    ctx.shader_perm,
-                    current_frame,
-                );
+                    shader_perm: ctx.shader_perm,
+                    last_used_frame: current_frame,
+                };
+                entry.refresh(key, batch, metadata);
                 TouchOutcome::Stale
             }
             None => {
@@ -630,17 +669,15 @@ impl FrameMaterialBatchCache {
                     ctx.pipeline_property_ids,
                     ctx.shader_perm,
                 );
-                self.entries.insert(
-                    key,
-                    CacheEntry {
-                        batch,
-                        material_gen,
-                        property_block_gen,
-                        router_gen,
-                        shader_perm: ctx.shader_perm,
-                        last_used_frame: current_frame,
-                    },
-                );
+                let metadata = CacheEntryMetadata {
+                    material_gen,
+                    property_block_gen,
+                    router_gen,
+                    shader_perm: ctx.shader_perm,
+                    last_used_frame: current_frame,
+                };
+                self.entries
+                    .insert(key, CacheEntry::new(key, batch, metadata));
                 TouchOutcome::Miss
             }
         }

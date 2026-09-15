@@ -140,6 +140,8 @@ mod tests {
                 view_origin_world: Vec3::ZERO,
                 culling: None,
                 retain_gpu_static_candidates: false,
+                shadow_caster_only: false,
+                needs_world_bounds: false,
                 lod_selection_culling: None,
                 mesh_lod_bias: 2.0,
                 transform_filter,

@@ -6,6 +6,7 @@
 //! binding lives in [`vertex_binding`].
 
 mod bind_group;
+mod indirect;
 mod scissor;
 mod vertex_binding;
 
@@ -31,6 +32,7 @@ use super::normal_pass::{
 };
 
 use bind_group::{PerDrawSlabBind, bind_per_draw_slab_if_changed};
+use indirect::draw_single_indirect_command;
 use scissor::{reset_forward_scissor, set_forward_scissor_if_changed};
 pub(in crate::passes::world_mesh_forward) use vertex_binding::{
     EmbeddedVertexStreamFlags, forward_arena_alloc, forward_stream_flags,
@@ -375,15 +377,15 @@ struct ForwardIndirectProfile;
 
 #[cfg(not(feature = "tracy"))]
 impl ForwardIndirectProfile {
-    #[inline(always)]
+    #[inline]
     fn new(_input_groups: usize) -> Self {
         Self
     }
 
-    #[inline(always)]
+    #[expect(clippy::needless_pass_by_ref_mut, reason = "same API under both cfgs")]
     fn note_run(&mut self, _command_count: usize) {}
 
-    #[inline(always)]
+    #[expect(clippy::needless_pass_by_ref_mut, reason = "same API under both cfgs")]
     fn note_fallback(
         &mut self,
         _group: &DrawGroup,
@@ -393,12 +395,10 @@ impl ForwardIndirectProfile {
     ) {
     }
 
-    #[inline(always)]
     fn finish(self) {}
 }
 
 /// Records one raster subpass by walking pre-built [`DrawGroup`]s.
-///
 /// Each group is one `draw_indexed` covering a contiguous slab range of identical instances.
 /// The `precomputed` cursor advances on each group's `representative_draw_idx`, which is
 /// monotonically increasing across the group list -- O(1) amortised. Pipelines and `@group(1)`
@@ -489,6 +489,10 @@ fn summarize_forward_groups(groups: &[DrawGroup]) -> (usize, usize) {
     (subpass_batch_count, subpass_input_draws)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "hot loop uses pre-borrowed state"
+)]
 fn draw_forward_groups(
     rpass: &mut wgpu::RenderPass<'_>,
     groups: &[DrawGroup],
@@ -600,7 +604,7 @@ fn draw_forward_gpu_run(
     bind_forward_per_draw_slab(rpass, resources, state, first);
     set_stencil_reference_if_changed(rpass, resources, state, run.representative_draw_idx);
     set_forward_scissor_if_changed(rpass, resources, state, run.representative_draw_idx);
-    let pipeline_id: *const wgpu::RenderPipeline = &pipelines[0];
+    let pipeline_id: *const wgpu::RenderPipeline = &raw const pipelines[0];
     if state.last_pipeline != Some(pipeline_id) {
         rpass.set_pipeline(&pipelines[0]);
         state.last_pipeline = Some(pipeline_id);
@@ -626,13 +630,15 @@ fn cpu_indirect_batch_limit(
         .map_or(group_count, |run| run.group_start)
 }
 
-/// Draws a maximal run of adjacent static, single-pipeline, unscissored groups sharing a material
-/// packet, index width, and stencil reference as one `multi_draw_indexed_indirect` from the arena.
+/// Draws adjacent batchable groups with one `multi_draw_indexed_indirect` from the arena.
 /// Returns the number of groups consumed, or [`None`] when `groups[start]` is not batchable (the
 /// caller records it per-mesh).
-///
 /// `limit` is the exclusive end the run may not cross, used to stop short of the next GPU-culled
 /// run. Pass `groups.len()` when nothing else owns a later group.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "hot loop uses pre-borrowed state"
+)]
 fn draw_forward_indirect_run(
     rpass: &mut wgpu::RenderPass<'_>,
     groups: &[DrawGroup],
@@ -703,7 +709,7 @@ fn draw_forward_indirect_run(
     bind_forward_per_draw_slab(rpass, resources, state, first);
     set_stencil_reference_if_changed(rpass, resources, state, representative);
     set_forward_scissor_if_changed(rpass, resources, state, representative);
-    let pipeline_id: *const wgpu::RenderPipeline = &pipelines[0];
+    let pipeline_id: *const wgpu::RenderPipeline = &raw const pipelines[0];
     if state.last_pipeline != Some(pipeline_id) {
         rpass.set_pipeline(&pipelines[0]);
         state.last_pipeline = Some(pipeline_id);
@@ -713,6 +719,12 @@ fn draw_forward_indirect_run(
         return None;
     }
     let command_count = u32::try_from(commands.len() - command_start).unwrap_or(u32::MAX);
+    if command_count == 1 {
+        draw_single_indirect_command(rpass, commands[command_start]);
+        // Drop the row so it is neither uploaded nor consuming a slot in the frame's buffer.
+        commands.truncate(command_start);
+        return Some(end - start);
+    }
     indirect_buffer.draw_range(rpass, first_command, command_count);
     Some(end - start)
 }
@@ -1617,9 +1629,12 @@ struct ActivePipelineSelection<'a> {
 }
 
 /// Walks the pipeline set for `item` and issues one [`draw_mesh_submesh_instanced`] per pipeline.
-///
 /// `last_pipeline` is updated and consulted across batches so that adjacent draws sharing a
 /// pipeline (the typical case within a precomputed batch) skip the redundant `set_pipeline`.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "hot loop uses pre-borrowed state"
+)]
 fn issue_material_pipeline_passes(
     rpass: &mut wgpu::RenderPass<'_>,
     encode: &WorldMeshForwardEncodeRefs<'_>,

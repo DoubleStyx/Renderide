@@ -25,6 +25,9 @@ pub enum RenderBackendAttachError {
     /// Embedded raster `@group(1)` bind resources could not be created.
     #[error(transparent)]
     EmbeddedMaterialBind(#[from] EmbeddedMaterialBindError),
+    /// Frame resources reported a successful attach without constructing their geometry store.
+    #[error("attached frame GPU resources do not own a static geometry store")]
+    MissingStaticGeometryStore,
 }
 
 /// Device, queue, and settings passed to [`RenderBackend::attach`] (shared-memory flush is passed separately for borrow reasons).
@@ -97,7 +100,7 @@ impl RenderBackend {
         let static_geometry_store = self
             .frame_services
             .shared_static_geometry_store()
-            .expect("attached frame GPU resources must own a static geometry store");
+            .ok_or(RenderBackendAttachError::MissingStaticGeometryStore)?;
         self.asset_transfers
             .attach_gpu_runtime(AssetGpuRuntimeAttach {
                 device: device.clone(),

@@ -5,12 +5,14 @@ use hashbrown::HashMap;
 use glam::{Mat4, Vec3};
 
 use crate::materials::RasterFrontFace;
+use crate::render_contract::ParticleDrawKind;
 use crate::scene::{RenderSpaceId, SkinnedMeshRenderer};
-use crate::shared::LayerType;
+use crate::shared::{LayerType, MeshAlignment, ShadowCastMode};
 
 use crate::world_mesh::culling::{
-    CpuCullFailure, MeshCullTarget, mesh_cpu_cull_with_geometry,
-    mesh_world_geometry_for_cull_with_head,
+    CpuCullFailure, MeshCullTarget, mesh_cpu_cull_after_spatial_frustum_with_geometry,
+    mesh_cpu_cull_with_geometry, mesh_world_geometry_for_cull_with_head,
+    mesh_world_geometry_for_rigid_override,
 };
 use crate::world_mesh::materials::FrameMaterialBatchCache;
 
@@ -67,6 +69,12 @@ enum PreparedRunSkinning<'a> {
     Stale,
 }
 
+#[derive(Clone, Copy)]
+struct PreparedRunVisibility {
+    defer_to_gpu: bool,
+    spatial_frustum_pretested: bool,
+}
+
 impl<'a> PreparedRunSkinning<'a> {
     /// Returns the culling target's optional skinned renderer borrow.
     fn as_renderer(&self) -> Option<&'a SkinnedMeshRenderer> {
@@ -121,7 +129,7 @@ fn prepared_run_view_state(
     mesh: &crate::assets::mesh::GpuMesh,
     skinning: &PreparedRunSkinning<'_>,
     ctx: &DrawCollectionInputs<'_>,
-    defer_visibility_to_gpu: bool,
+    visibility: PreparedRunVisibility,
 ) -> (Option<PreparedRunViewState>, (usize, usize, usize)) {
     let mut cull_stats = (0usize, 0usize, 0usize);
     let mut rigid_world_matrix = None;
@@ -132,27 +140,35 @@ fn prepared_run_view_state(
     }
     let needs_geometry = ctx.view.reflection_probes.is_some()
         || ctx.view.culling.is_some()
+        || ctx.view.needs_world_bounds
         || first.world_space_deformed
-        || defer_visibility_to_gpu;
-    let geometry = (needs_geometry && first.rigid_world_matrix_override.is_none()).then(|| {
-        // Reuse the per-renderer geometry that `FramePreparedRenderables::build_for_frame` already
-        // computed for non-overlay spaces. Overlay spaces (geometry depends on the per-view
-        // `head_output_transform`) keep recomputing per-view via the fallback path below.
-        first.cull_geometry.unwrap_or_else(|| {
-            let target = MeshCullTarget {
-                scene: ctx.scene_assets.scene,
-                space_id: first.space_id,
-                mesh,
-                skinned: first.skinned,
-                skinned_renderer: skinning.as_renderer(),
-                node_id: first.node_id,
-            };
-            mesh_world_geometry_for_cull_with_head(
-                &target,
-                ctx.view.head_output_transform,
-                ctx.view.render_context,
-            )
-        })
+        || visibility.defer_to_gpu;
+    let geometry = needs_geometry.then(|| {
+        if let Some(model) = first.rigid_world_matrix_override {
+            let orientation_invariant = first.particle_draw.kind == ParticleDrawKind::Mesh
+                && (first.particle_draw.alignment == MeshAlignment::View as u32
+                    || first.particle_draw.alignment == MeshAlignment::Facing as u32);
+            mesh_world_geometry_for_rigid_override(&mesh.bounds, model, orientation_invariant)
+        } else {
+            // Reuse the per-renderer geometry that `FramePreparedRenderables::build_for_frame`
+            // already computed for non-overlay spaces. Overlay spaces (geometry depends on the
+            // per-view `head_output_transform`) keep recomputing via the fallback path below.
+            first.cull_geometry.unwrap_or_else(|| {
+                let target = MeshCullTarget {
+                    scene: ctx.scene_assets.scene,
+                    space_id: first.space_id,
+                    mesh,
+                    skinned: first.skinned,
+                    skinned_renderer: skinning.as_renderer(),
+                    node_id: first.node_id,
+                };
+                mesh_world_geometry_for_cull_with_head(
+                    &target,
+                    ctx.view.head_output_transform,
+                    ctx.view.render_context,
+                )
+            })
+        }
     });
     if let Some(geom) = geometry {
         world_aabb = geom.world_aabb;
@@ -162,14 +178,21 @@ fn prepared_run_view_state(
         // and instance planning; deferring only removed it from the GPU.
         if let Some(c) = ctx.view.culling {
             cull_stats.0 += run.len();
-            match mesh_cpu_cull_with_geometry(
-                geom,
-                ctx.scene_assets.scene,
-                first.space_id,
-                is_overlay,
-                c,
-                None,
-            ) {
+            let spatially_accepted = visibility.spatial_frustum_pretested
+                && super::super::prepared_renderables::indexable_run_bounds(first).is_some();
+            let cull_result = if spatially_accepted {
+                mesh_cpu_cull_after_spatial_frustum_with_geometry(geom, first.space_id, c)
+            } else {
+                mesh_cpu_cull_with_geometry(
+                    geom,
+                    ctx.scene_assets.scene,
+                    first.space_id,
+                    is_overlay,
+                    c,
+                    None,
+                )
+            };
+            match cull_result {
                 Err(CpuCullFailure::Frustum | CpuCullFailure::UiRectMask) => {
                     cull_stats.1 += run.len();
                     return (None, cull_stats);
@@ -317,6 +340,13 @@ fn collect_prepared_renderer_run(
     {
         return (0, 0, 0);
     }
+    // Prepared runs group every material slot for one renderer and include shadow mode in their
+    // shared identity. Shadow collection can therefore reject the whole run before transform,
+    // mesh, material, and `WorldMeshDrawItem` work. The downstream material/pipeline caster
+    // filter remains necessary for modes that can cast.
+    if ctx.view.shadow_caster_only && first.shadow_cast_mode == ShadowCastMode::Off {
+        return (0, 0, 0);
+    }
     if transform_chain_has_degenerate_scale(ctx, first.space_id, first.node_id) {
         return (0, 0, 0);
     }
@@ -337,7 +367,10 @@ fn collect_prepared_renderer_run(
         mesh,
         &skinning,
         ctx,
-        defer_visibility_to_gpu,
+        PreparedRunVisibility {
+            defer_to_gpu: defer_visibility_to_gpu,
+            spatial_frustum_pretested: state.spatial_frustum_pretested,
+        },
     );
     if let Some(view_state) = view_state {
         append_prepared_run_draws(run, ctx, state.cache, mesh, is_overlay, &view_state, out);

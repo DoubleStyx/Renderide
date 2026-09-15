@@ -70,8 +70,7 @@ pub struct ReflectionProbeSpecularSystem {
     last_stats: MaintainStats,
     /// Last source that finished IBL and optional SH2 work for each probe.
     last_ready: HashMap<ProbeIdentity, LastReadyProbe>,
-    /// Per-probe rows currently committed to `atlas`, retained separately from pending face-size
-    /// bakes so transforms/removals can keep updating while the old atlas remains active.
+    /// Rows committed to `atlas`, retained while pending face-size bakes update the old atlas.
     active_ready: Vec<ReadyProbe>,
     /// Highest runtime capture generation with a completed final specular IBL cube.
     runtime_final_ready_generation: HashMap<ProbeIdentity, u64>,
@@ -353,6 +352,7 @@ impl ReflectionProbeSpecularSystem {
         summary
     }
 
+    #[expect(clippy::too_many_arguments, reason = "explicit hot-path probe state")]
     fn collect_probe_source_summary(
         &mut self,
         params: &mut ReflectionProbeSpecularMaintainParams<'_>,
@@ -463,6 +463,7 @@ impl ReflectionProbeSpecularSystem {
         cache
     }
 
+    #[expect(clippy::too_many_arguments, reason = "explicit hot-path probe state")]
     fn collect_probe_resource(
         &mut self,
         params: &mut ReflectionProbeSpecularMaintainParams<'_>,
@@ -594,6 +595,11 @@ impl ReflectionProbeSpecularSystem {
         &self.selection
     }
 
+    #[expect(
+        clippy::expect_used,
+        clippy::too_many_lines,
+        reason = "atlas invariants"
+    )]
     fn sync_atlas_and_selection(
         &mut self,
         gpu: &mut GpuContext,
@@ -648,9 +654,7 @@ impl ReflectionProbeSpecularSystem {
                 ready.iter().map(|probe| &probe.key),
             )
         }) {
-            // A face-size transition changes every IBL cache key. Keep sampling the complete old
-            // atlas while the replacement bakes finish; externally-resident old cubes deliberately
-            // have no standalone texture to recover from after the atlas is dropped.
+            // Keep the old atlas while face-size bakes finish; external cubes have no fallback.
             if let Some(atlas) = self.atlas.as_ref() {
                 stats.atlas_capacity = usize::from(atlas.capacity);
                 stats.atlas_unique_keys = atlas.slots.iter().flatten().count();
@@ -662,8 +666,7 @@ impl ReflectionProbeSpecularSystem {
             stats.atlas_transition_pending = true;
             self.refresh_active_atlas_selection_during_transition(gpu.queue(), ready);
             if self.active_ready.is_empty() {
-                // No active row samples this atlas. Remove its external-only fallbacks before
-                // target-face bakes continue.
+                // Remove external-only fallbacks when no active row samples this atlas.
                 self.atlas = None;
                 self.resources = None;
                 self.last_ready
@@ -850,9 +853,10 @@ impl ReflectionProbeSpecularSystem {
         self.active_ready = refreshed;
     }
 
+    #[expect(clippy::too_many_lines, reason = "atomic atlas migration")]
     fn ensure_atlas(
         &mut self,
-        gpu: &GpuContext,
+        gpu: &mut GpuContext,
         face_size: u32,
         required_texture_slots: u16,
         required_metadata_slots: u16,
@@ -977,7 +981,7 @@ impl ReflectionProbeSpecularSystem {
 
     fn encode_atlas_resize_copy(
         &self,
-        gpu: &GpuContext,
+        gpu: &mut GpuContext,
         old: &ReflectionProbeAtlas,
         destination: &wgpu::Texture,
         face_size: u32,
@@ -989,6 +993,11 @@ impl ReflectionProbeSpecularSystem {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("reflection_probe_atlas_resize_copy"),
             });
+        // This background encoder resolves its own profiler queries; the frame never sees it.
+        let mut profiler = gpu.take_gpu_profiler();
+        let resize_query = profiler
+            .as_ref()
+            .map(|p| p.begin_query("reflection_probe_specular::atlas_resize_copy", &mut encoder));
         for mip in 0..mip_levels.min(old.mip_levels) {
             let extent = mip_extent(face_size, mip);
             encoder.copy_texture_to_texture(
@@ -1014,12 +1023,18 @@ impl ReflectionProbeSpecularSystem {
                 },
             );
         }
+        if let (Some(profiler), Some(query)) = (profiler.as_mut(), resize_query) {
+            profiler.end_query(&mut encoder, query);
+            profiler.resolve_queries(&mut encoder);
+        }
         let mut retained = GpuRetainedResources::new();
         retained.retain_texture(old.texture.as_ref().clone());
         retained.retain_texture(destination.clone());
+        let command_buffer = encoder.finish();
+        gpu.restore_gpu_profiler(profiler);
         gpu.submit_frame_batch_with_retained_resources(
             FrameSubmitKind::BackgroundGpuWork,
-            vec![encoder.finish()],
+            vec![command_buffer],
             None,
             None,
             Vec::new(),
@@ -1030,7 +1045,7 @@ impl ReflectionProbeSpecularSystem {
 
     fn encode_atlas_repack_copy(
         &self,
-        gpu: &GpuContext,
+        gpu: &mut GpuContext,
         old: &ReflectionProbeAtlas,
         destination: &wgpu::Texture,
         face_size: u32,
@@ -1046,6 +1061,10 @@ impl ReflectionProbeSpecularSystem {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("reflection_probe_atlas_repack_copy"),
             });
+        let mut profiler = gpu.take_gpu_profiler();
+        let repack_query = profiler
+            .as_ref()
+            .map(|p| p.begin_query("reflection_probe_specular::atlas_repack_copy", &mut encoder));
         for copy in copies {
             for mip in 0..copy.mip_levels.min(mip_levels).min(old.mip_levels) {
                 let extent = mip_extent(face_size, mip);
@@ -1078,12 +1097,18 @@ impl ReflectionProbeSpecularSystem {
                 );
             }
         }
+        if let (Some(profiler), Some(query)) = (profiler.as_mut(), repack_query) {
+            profiler.end_query(&mut encoder, query);
+            profiler.resolve_queries(&mut encoder);
+        }
         let mut retained = GpuRetainedResources::new();
         retained.retain_texture(old.texture.as_ref().clone());
         retained.retain_texture(destination.clone());
+        let command_buffer = encoder.finish();
+        gpu.restore_gpu_profiler(profiler);
         gpu.submit_frame_batch_with_retained_resources(
             FrameSubmitKind::BackgroundGpuWork,
-            vec![encoder.finish()],
+            vec![command_buffer],
             None,
             None,
             Vec::new(),
@@ -1212,8 +1237,7 @@ impl From<&ReadyProbe> for AtlasProbeRequest {
     }
 }
 
-/// Pixel-producing identity of a filtered atlas cube. Per-probe/cache lifecycle fields that do
-/// not change texels are intentionally excluded so metadata rows can share one texture slot.
+/// Texel identity of a filtered cube; lifecycle fields are excluded so metadata can share it.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 enum AtlasTextureKey {
     Cubemap {
@@ -1327,6 +1351,7 @@ fn deduplicate_atlas_requests(requests: Vec<AtlasProbeRequest>) -> Vec<AtlasProb
     unique
 }
 
+#[expect(clippy::expect_used, reason = "atlas capacity invariant")]
 fn plan_atlas_placements(
     requests: &[AtlasProbeRequest],
     previous_slots: &[Option<AtlasResidentProbe>],
@@ -1337,8 +1362,7 @@ fn plan_atlas_placements(
     let mut claimed = vec![false; capacity];
     let mut placements = vec![None; requests.len()];
 
-    // Preserve exact identity/key matches first. Camera and scene changes can then update only
-    // metadata without moving or recopying any cubemap texels.
+    // Preserve exact matches so metadata-only changes do not move or recopy cubemap texels.
     for (request_index, request) in requests.iter().enumerate() {
         let exact = previous_slots
             .iter()
@@ -1363,8 +1387,7 @@ fn plan_atlas_placements(
         }
     }
 
-    // If an identity changed but another old slot already contains the requested cube, adopt that
-    // slot. This keeps externally-resident cubes usable without restoring a standalone texture.
+    // Adopt matching old slots so external cubes need no restored standalone texture.
     for (request_index, request) in requests.iter().enumerate() {
         if placements[request_index].is_some() {
             continue;
@@ -1391,8 +1414,7 @@ fn plan_atlas_placements(
         }
     }
 
-    // New identities take any remaining slot. Shared keys copy from the stable resident slot;
-    // genuinely new keys copy once from the just-completed bake texture.
+    // New identities use free slots; shared keys reuse residents and new keys use completed bakes.
     for (request_index, request) in requests.iter().enumerate() {
         if placements[request_index].is_some() {
             continue;
@@ -1430,6 +1452,7 @@ fn plan_atlas_placements(
     }
 }
 
+#[expect(clippy::expect_used, reason = "resident predicate invariant")]
 fn plan_atlas_repack(
     requests: &[AtlasProbeRequest],
     previous_slots: &[Option<AtlasResidentProbe>],

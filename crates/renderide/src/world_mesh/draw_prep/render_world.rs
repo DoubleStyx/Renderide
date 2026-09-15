@@ -4,6 +4,7 @@
 //! side of world-mesh draw prep and stores renderer-facing draw templates that are expensive to
 //! rediscover every frame.
 
+mod admission;
 mod maintenance;
 mod mesh_state;
 mod refresh;
@@ -13,7 +14,6 @@ mod state;
 use hashbrown::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::cpu_parallelism::{FrameCpuWorkload, FrameParallelPolicy, ParallelAdmission};
 use crate::gpu_pools::MeshPool;
 use crate::scene::MeshRendererInstanceId;
 use crate::scene::{
@@ -27,6 +27,13 @@ use crate::shared::RenderingContext;
 use crate::world_mesh::culling::MeshCullGeometry;
 
 use super::prepared_renderables::FramePreparedRenderables;
+#[cfg(test)]
+use admission::{DIRTY_SPACE_REFRESH_PARALLEL_MIN_WORK_UNITS, SNAPSHOT_REBUILD_PARALLEL_MIN_DRAWS};
+use admission::{
+    SNAPSHOT_REBUILD_PARALLEL_TARGET_CHUNK_TEMPLATES, dirty_refresh_admission,
+    mesh_asset_expansion_admission, snapshot_rebuild_admission, transform_root_expansion_admission,
+    transform_root_node_scan_admission,
+};
 use mesh_state::MeshDrawPrepState;
 use snapshot::SnapshotRebuildStats;
 use state::RenderWorldSpace;
@@ -88,26 +95,6 @@ impl RenderWorldDirtyReasonCounts {
     }
 }
 
-/// Transform-root dirty records assigned to one expansion worker.
-const DIRTY_ROOT_EXPANSION_PARALLEL_CHUNK_ITEMS: usize = 1;
-/// Retained node-index entries required before one root expansion scans in parallel.
-const DIRTY_ROOT_NODE_SCAN_PARALLEL_MIN_NODES: usize = 128;
-/// Retained node-index entries assigned to one root-expansion scan task.
-const DIRTY_ROOT_NODE_SCAN_PARALLEL_CHUNK_NODES: usize = 64;
-/// Render spaces assigned to one mesh-asset dirty expansion worker.
-const MESH_ASSET_DIRTY_EXPANSION_PARALLEL_CHUNK_SPACES: usize = 1;
-/// Dirty render spaces assigned to one retained-cache refresh worker.
-const DIRTY_SPACE_REFRESH_PARALLEL_CHUNK_SPACES: usize = 1;
-/// Prepared-snapshot copy tasks assigned to one rebuild worker.
-const SNAPSHOT_REBUILD_PARALLEL_CHUNK_TASKS: usize = 1;
-/// Estimated dirty renderer/template work required before retained cache refresh uses Rayon.
-const DIRTY_SPACE_REFRESH_PARALLEL_MIN_WORK_UNITS: usize = 64;
-/// Retained draw templates targeted for one prepared-snapshot rebuild task.
-const SNAPSHOT_REBUILD_PARALLEL_TARGET_CHUNK_TEMPLATES: usize = 256;
-/// Retained draw-template count required before snapshot rebuild fan-out is considered.
-const SNAPSHOT_REBUILD_PARALLEL_MIN_DRAWS: usize =
-    SNAPSHOT_REBUILD_PARALLEL_TARGET_CHUNK_TEMPLATES * 2;
-
 /// Process-local identity source for retained render-world instances.
 ///
 /// [`RenderWorld::prepared_generation`] is monotonic only within one `RenderWorld`. A cross-frame
@@ -117,72 +104,6 @@ static NEXT_RENDER_WORLD_CACHE_IDENTITY: AtomicU64 = AtomicU64::new(1);
 
 fn next_render_world_cache_identity() -> u64 {
     NEXT_RENDER_WORLD_CACHE_IDENTITY.fetch_add(1, Ordering::Relaxed)
-}
-
-/// Returns the admission decision for transform-root dirty expansion.
-fn transform_root_expansion_admission(
-    policy: FrameParallelPolicy,
-    root_count: usize,
-) -> ParallelAdmission {
-    policy.admit_independent_items(
-        FrameCpuWorkload::independent_items(root_count),
-        DIRTY_ROOT_EXPANSION_PARALLEL_CHUNK_ITEMS,
-    )
-}
-
-/// Returns the admission decision for a large retained node-index scan.
-fn transform_root_node_scan_admission(
-    policy: FrameParallelPolicy,
-    node_count: usize,
-) -> ParallelAdmission {
-    if node_count < DIRTY_ROOT_NODE_SCAN_PARALLEL_MIN_NODES {
-        return ParallelAdmission::Serial;
-    }
-    policy.admit_independent_items(
-        FrameCpuWorkload::independent_items(node_count),
-        DIRTY_ROOT_NODE_SCAN_PARALLEL_CHUNK_NODES,
-    )
-}
-
-/// Returns the admission decision for mesh-asset dirty expansion.
-fn mesh_asset_expansion_admission(
-    policy: FrameParallelPolicy,
-    space_count: usize,
-) -> ParallelAdmission {
-    policy.admit_independent_items(
-        FrameCpuWorkload::independent_items(space_count),
-        MESH_ASSET_DIRTY_EXPANSION_PARALLEL_CHUNK_SPACES,
-    )
-}
-
-/// Returns the admission decision for dirty retained-cache refresh.
-fn dirty_refresh_admission(
-    policy: FrameParallelPolicy,
-    space_count: usize,
-    estimated_work_units: usize,
-) -> ParallelAdmission {
-    if estimated_work_units < DIRTY_SPACE_REFRESH_PARALLEL_MIN_WORK_UNITS {
-        return ParallelAdmission::Serial;
-    }
-    policy.admit_independent_items(
-        FrameCpuWorkload::new(0, estimated_work_units, space_count),
-        DIRTY_SPACE_REFRESH_PARALLEL_CHUNK_SPACES,
-    )
-}
-
-/// Returns the admission decision for retained prepared-snapshot rebuild.
-fn snapshot_rebuild_admission(
-    policy: FrameParallelPolicy,
-    task_count: usize,
-    retained_draw_count: usize,
-) -> ParallelAdmission {
-    if retained_draw_count < SNAPSHOT_REBUILD_PARALLEL_MIN_DRAWS {
-        return ParallelAdmission::Serial;
-    }
-    policy.admit_independent_items(
-        FrameCpuWorkload::new(0, retained_draw_count, task_count),
-        SNAPSHOT_REBUILD_PARALLEL_CHUNK_TASKS,
-    )
 }
 
 /// Maintenance counters for backend-owned retained render-world caches.
@@ -264,6 +185,8 @@ pub struct RenderWorldMaintenanceStats {
     pub context_overlay_clone_count: usize,
     /// Why the last overlay clone happened. See [`OVERLAY_CLONE_REASON_*`].
     pub context_overlay_clone_reason: usize,
+    /// Overlay frames that re-expanded only the override targets instead of cloning the world.
+    pub context_overlay_override_replay_count: usize,
     /// Exact override renderer ranges patched into context overlays.
     pub context_override_patch_count: usize,
     /// Frames where this render world proved its retained snapshot did not need rebuilding.
@@ -311,6 +234,7 @@ impl RenderWorldMaintenanceStats {
             context_overlay_sync_count: self.context_overlay_sync_count,
             context_overlay_clone_count: self.context_overlay_clone_count,
             context_overlay_clone_reason: self.context_overlay_clone_reason,
+            context_overlay_override_replay_count: self.context_overlay_override_replay_count,
             context_override_patch_count: self.context_override_patch_count,
             steady_state_skip_count: self.steady_state_skip_count,
         }
@@ -359,6 +283,7 @@ impl RenderWorldMaintenanceStats {
         self.context_overlay_clone_reason = self
             .context_overlay_clone_reason
             .max(other.context_overlay_clone_reason);
+        self.context_overlay_override_replay_count += other.context_overlay_override_replay_count;
         self.context_override_patch_count += other.context_override_patch_count;
         self.steady_state_skip_count += other.steady_state_skip_count;
     }
@@ -389,6 +314,8 @@ pub struct RenderWorld {
     particle_snapshot_dirty: bool,
     /// Spaces whose complete generated-particle suffix needs replacement.
     dirty_particle_spaces: HashSet<RenderSpaceId>,
+    /// Spaces whose LOD group membership changed without any renderer template changing.
+    dirty_lod_spaces: HashSet<RenderSpaceId>,
     /// Stable particle renderer rows eligible for direct prepared-range patching.
     dirty_particle_renderers: HashSet<RenderWorldParticleRendererDirty>,
     /// Generated mesh assets awaiting classification against scene particle renderer rows.
@@ -415,8 +342,17 @@ pub struct RenderWorld {
     overlay_base_bounds_generation: u64,
     /// Base mesh-patch generation most recently replayed into this overlay.
     overlay_base_mesh_patch_generation: u64,
-    /// Whether context-override membership/state changed since the overlay was last patched.
-    overlay_dirty: bool,
+    /// Whether whole spaces appeared or vanished, so the overlay's row layout no longer matches.
+    ///
+    /// This is the only condition that still forces a full re-clone. It is genuinely rare.
+    overlay_structural_dirty: bool,
+    /// Whether this context's material/transform override membership changed.
+    ///
+    /// Used to be folded into the structural bit, which meant a handful of override edits
+    /// re-cloned every retained template in the world, every frame they happened. Overrides are
+    /// overlay-local by definition (the base world is context invariant), so the affected
+    /// renderers can just be re-expanded in place. -xlinka
+    overlay_override_targets_dirty: bool,
     /// Whether particle renderer membership changed the cached transform-override target set.
     ///
     /// Particle topology deliberately does not advance [`Self::static_generation`], so this
@@ -570,7 +506,8 @@ impl RenderWorld {
         let mut overlay = Self::new_with_context_mode(render_context, false);
         overlay.context_overlay = true;
         overlay.full_rebuild_requested = false;
-        overlay.overlay_dirty = true;
+        // A fresh overlay has no rows at all, so the first sync must be the full clone.
+        overlay.overlay_structural_dirty = true;
         overlay
     }
 
@@ -587,6 +524,7 @@ impl RenderWorld {
             mesh_draw_prep_states: HashMap::new(),
             particle_snapshot_dirty: false,
             dirty_particle_spaces: HashSet::new(),
+            dirty_lod_spaces: HashSet::new(),
             dirty_particle_renderers: HashSet::new(),
             dirty_generated_particle_mesh_assets: HashSet::new(),
             dirty_particle_source_mesh_assets: HashSet::new(),
@@ -600,7 +538,8 @@ impl RenderWorld {
             overlay_base_structural_generation: 0,
             overlay_base_bounds_generation: 0,
             overlay_base_mesh_patch_generation: 0,
-            overlay_dirty: false,
+            overlay_structural_dirty: false,
+            overlay_override_targets_dirty: false,
             overlay_particle_targets_dirty: false,
             overlay_mesh_override_targets: HashSet::new(),
             overlay_particle_override_targets: HashSet::new(),
@@ -691,13 +630,13 @@ impl RenderWorld {
             let render_context = self.prepared.render_context();
             self.overlay_particle_targets_dirty |=
                 !report.render_world_dirty.particle_spaces.is_empty();
-            self.overlay_dirty |= !report.render_world_dirty.full_spaces.is_empty()
-                || !report.removed_spaces.is_empty()
-                || report
-                    .render_world_dirty
-                    .material_overrides
-                    .iter()
-                    .any(|dirty| dirty.context == render_context)
+            self.overlay_structural_dirty |= !report.render_world_dirty.full_spaces.is_empty()
+                || !report.removed_spaces.is_empty();
+            self.overlay_override_targets_dirty |= report
+                .render_world_dirty
+                .material_overrides
+                .iter()
+                .any(|dirty| dirty.context == render_context)
                 || report
                     .render_world_dirty
                     .context_overrides
@@ -705,8 +644,40 @@ impl RenderWorld {
                     .any(|dirty| dirty.context == render_context);
             return;
         }
+        #[cfg(feature = "tracy")]
+        {
+            // Which escalation forced a full-space rebuild. Six sites can, and a full-space rebuild
+            // re-expands every template in the space plus the prepared snapshot.
+            let reasons = report.full_space_reasons;
+            tracy_client::plot!("render_world::full_space_reason_header", reasons[0] as f64);
+            tracy_client::plot!("render_world::full_space_reason_layers", reasons[1] as f64);
+            tracy_client::plot!("render_world::full_space_reason_lod_groups", reasons[2] as f64);
+            tracy_client::plot!(
+                "render_world::full_space_reason_static_mesh_rows",
+                reasons[3] as f64
+            );
+            tracy_client::plot!(
+                "render_world::full_space_reason_skinned_mesh_rows",
+                reasons[4] as f64
+            );
+            tracy_client::plot!(
+                "render_world::full_space_reason_transform_rows",
+                reasons[5] as f64
+            );
+            tracy_client::plot!(
+                "render_world::full_spaces",
+                report.render_world_dirty.full_spaces.len() as f64
+            );
+        }
         for &id in &report.render_world_dirty.full_spaces {
             self.note_space_dirty(id);
+        }
+        // LOD membership selects which retained renderers a group references. No renderer template
+        // changes, so this must not escalate into a full-space re-expansion.
+        for &id in &report.render_world_dirty.lod_spaces {
+            if !self.dirty_spaces.contains(&id) {
+                self.dirty_lod_spaces.insert(id);
+            }
         }
         for &dirty in &report.render_world_dirty.renderers {
             self.note_renderer_dirty(dirty, RenderWorldDirtyReason::Topology);
@@ -773,6 +744,10 @@ impl RenderWorld {
     pub fn note_cache_flush_report(&self, _report: &SceneCacheFlushReport) {}
 
     /// Returns the prepared draw snapshot for this frame, refreshing dirty cached records first.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "frame maintenance is an ordered transaction across dirty classification, patching, snapshot publication, and generation updates"
+    )]
     pub fn prepare_for_frame<S>(
         &mut self,
         scene: &S,
@@ -792,6 +767,7 @@ impl RenderWorld {
             context_invariant_count: usize::from(self.context_invariant),
             ..Default::default()
         };
+        self.prepared.begin_spatial_lod_refit_batch();
         let context_changed = !self
             .prepared
             .is_compatible_with_render_context(render_context);
@@ -835,6 +811,16 @@ impl RenderWorld {
             stats.refreshed_template_count += outcome.template_count;
             true
         };
+        // LOD-only membership changes rebuild the prepared group table and nothing else. Doing this
+        // before the snapshot decision keeps it off the full-space path entirely.
+        if !self.dirty_lod_spaces.is_empty() {
+            profiling::scope!("mesh::render_world::rebuild_lod_groups_only");
+            // Only the announced spaces need re-resolving. Rebuilding every space's groups cost
+            // 7554us per call and fired 82 times during a Dark City load. -xlinka
+            let spaces = std::mem::take(&mut self.dirty_lod_spaces);
+            self.prepared
+                .rebuild_lod_groups_for_spaces(Some(scene), Some(&spaces));
+        }
         if !self.dirty_renderers.is_empty() {
             let outcome = self.refresh_dirty_renderers(scene, mesh_pool, render_context);
             stats.refreshed_renderer_count += outcome.renderer_count;
@@ -869,13 +855,14 @@ impl RenderWorld {
         // rebuild); the particle branch below is the only particle-driven cause. Records whether the
         // static half of the snapshot changed so GPU-static plan reuse can ignore particle churn.
         let static_snapshot_change = snapshot_dirty;
-        let mut prepared_bounds_patched = false;
-        if !self.dirty_bounds_renderers.is_empty() {
+        let prepared_bounds_patched = if self.dirty_bounds_renderers.is_empty() {
+            false
+        } else {
             let outcome = self.refresh_dirty_bounds(scene, mesh_pool, render_context);
             stats.bounds_refreshed_renderer_count += outcome.renderer_count;
             stats.spatial_refit_count += outcome.spatial_refit_count;
-            prepared_bounds_patched = outcome.renderer_count > 0 || outcome.spatial_refit_count > 0;
-        }
+            outcome.renderer_count > 0 || outcome.spatial_refit_count > 0
+        };
         let mut prepared_particles_patched = false;
         if self.particle_snapshot_dirty {
             if !snapshot_dirty && !force_full_snapshot {
@@ -955,6 +942,10 @@ impl RenderWorld {
         } else {
             stats.steady_state_skip_count = 1;
         }
+        // Stable mesh, bounds, and particle patches can all touch the same render space during
+        // one prepare. Refit their final rows once, after structural rebuilds have had a chance to
+        // supersede queued work, and report only the spaces actually refit.
+        stats.spatial_refit_count += self.prepared.flush_spatial_lod_refit_batch(scene);
         self.full_rebuild_requested = false;
         if full_rebuild {
             self.rebuild_mesh_draw_prep_states(mesh_pool);
@@ -967,6 +958,11 @@ impl RenderWorld {
 
     /// Synchronizes a lightweight context-specialized prepared overlay from the single retained
     /// context-invariant world, then re-expands only exact transform/material override targets.
+    #[expect(
+        clippy::cognitive_complexity,
+        clippy::too_many_lines,
+        reason = "overlay synchronization is one ordered state transition whose replay, clone, and generation branches must remain visibly coordinated"
+    )]
     pub fn prepare_context_overlay_from(
         &mut self,
         base: &RenderWorld,
@@ -992,7 +988,7 @@ impl RenderWorld {
             == base.mesh_patch_log_base_generation
             || self.overlay_base_mesh_patch_generation == base.mesh_patch_generation;
         // Reported so a capture names the condition instead of leaving it to inference.
-        let clone_reason = if self.overlay_dirty {
+        let clone_reason = if self.overlay_structural_dirty {
             OVERLAY_CLONE_REASON_DIRTY
         } else if self.overlay_base_cache_identity != base.cache_identity {
             OVERLAY_CLONE_REASON_IDENTITY
@@ -1014,6 +1010,10 @@ impl RenderWorld {
         let particle_sync =
             !full_sync && self.overlay_base_prepared_generation != base.prepared_generation;
         let mut changed = false;
+        let mut static_override_changed = false;
+        if !full_sync {
+            self.prepared.begin_spatial_lod_refit_batch();
+        }
         if !full_sync && bounds_sync {
             profiling::scope!("mesh::render_world::overlay_bounds_replay");
             for patch in &base.bounds_patch_log {
@@ -1051,6 +1051,7 @@ impl RenderWorld {
         }
         if full_sync {
             self.prepared = base.prepared.clone_for_context_overlay(render_context);
+            self.prepared.begin_spatial_lod_refit_batch();
             stats.context_overlay_sync_count = 1;
             stats.context_overlay_clone_count = 1;
             changed = true;
@@ -1065,8 +1066,30 @@ impl RenderWorld {
             changed |= sync.changed;
         }
 
+        // Override membership changed but the row layout did not, so re-expand just the affected
+        // renderers instead of cloning the world. The replay set is the UNION of the targets this
+        // overlay currently holds and the ones the scene now reports: a renderer that lost its
+        // override has to be re-derived too, or it keeps the old override forever.
+        let override_replay = !full_sync && self.overlay_override_targets_dirty;
+        let mut replay_mesh_targets = HashSet::new();
+        let mut replay_particle_targets = HashSet::new();
         if full_sync {
             let targets = scene.render_context_draw_prep_override_targets(render_context);
+            self.overlay_mesh_override_targets = targets.mesh_renderers;
+            self.overlay_particle_override_targets = targets.particle_renderers;
+        } else if override_replay {
+            profiling::scope!("mesh::render_world::overlay_override_targets");
+            let targets = scene.render_context_draw_prep_override_targets(render_context);
+            replay_mesh_targets = self
+                .overlay_mesh_override_targets
+                .union(&targets.mesh_renderers)
+                .copied()
+                .collect();
+            replay_particle_targets = self
+                .overlay_particle_override_targets
+                .union(&targets.particle_renderers)
+                .copied()
+                .collect();
             self.overlay_mesh_override_targets = targets.mesh_renderers;
             self.overlay_particle_override_targets = targets.particle_renderers;
         } else if self.overlay_particle_targets_dirty {
@@ -1074,23 +1097,32 @@ impl RenderWorld {
                 .render_context_draw_prep_override_targets(render_context)
                 .particle_renderers;
         }
-        if full_sync || particle_sync {
+        if full_sync || particle_sync || override_replay {
             let empty_mesh_targets = HashSet::new();
             let mesh_targets = if full_sync {
                 &self.overlay_mesh_override_targets
+            } else if override_replay {
+                &replay_mesh_targets
             } else {
                 &empty_mesh_targets
             };
+            let particle_targets = if override_replay {
+                &replay_particle_targets
+            } else {
+                &self.overlay_particle_override_targets
+            };
+            stats.context_overlay_override_replay_count = usize::from(override_replay);
             let patch = self.prepared.patch_context_override_renderers(
                 scene,
                 mesh_pool,
                 point_render_buffers,
                 render_context,
                 mesh_targets,
-                &self.overlay_particle_override_targets,
+                particle_targets,
             );
             stats.context_override_patch_count =
                 patch.mesh_renderer_count + patch.particle_renderer_count;
+            static_override_changed = override_replay && patch.mesh_renderer_count != 0;
             stats.particle_renderer_patch_count += patch.particle_renderer_count;
             stats.particle_patch_draw_count += patch.draw_count;
             stats.particle_patch_structural_rebuild_count += patch.structural_rebuild_count;
@@ -1098,6 +1130,10 @@ impl RenderWorld {
             stats.spatial_rebuild_count += patch.structural_rebuild_count;
             changed |= patch.changed;
         }
+        // Bounds replay, mesh replay, particle synchronization, and context-override replay can
+        // overlap on the same space. The overlay publishes only their final rows, so one union
+        // refit here is both sufficient and cheaper than maintaining each intermediate state.
+        stats.spatial_refit_count += self.prepared.flush_spatial_lod_refit_batch(scene);
 
         self.overlay_base_cache_identity = base.cache_identity;
         self.overlay_base_prepared_generation = base.prepared_generation;
@@ -1105,13 +1141,16 @@ impl RenderWorld {
         self.overlay_base_structural_generation = base.structural_generation;
         self.overlay_base_bounds_generation = base.bounds_generation;
         self.overlay_base_mesh_patch_generation = base.mesh_patch_generation;
-        self.overlay_dirty = false;
+        // Every path that could set these has run above: a structural clone reapplies all targets,
+        // and the replay covers the union. Neither can be left pending.
+        self.overlay_structural_dirty = false;
+        self.overlay_override_targets_dirty = false;
         self.overlay_particle_targets_dirty = false;
         if changed {
             self.prepared_generation = self.prepared_generation.wrapping_add(1);
-            // A replayed bounds patch changes cull geometry, which the GPU-static plan key covers,
-            // so the overlay's static generation has to move with it as well as on a full sync.
-            if full_sync || bounds_sync || mesh_sync {
+            // Bounds, mesh, and override patches can all change rows covered by the GPU-static
+            // plan key. Particle-only override replay deliberately leaves that cache reusable.
+            if full_sync || bounds_sync || mesh_sync || static_override_changed {
                 self.static_generation = self.static_generation.wrapping_add(1);
             }
             if full_sync {
@@ -1150,6 +1189,7 @@ impl RenderWorld {
         self.dirty_transform_roots
             .retain(|dirty| dirty.space_id != id);
         self.dirty_particle_spaces.remove(&id);
+        self.dirty_lod_spaces.remove(&id);
         self.dirty_particle_renderers
             .retain(|dirty| dirty.space_id != id);
     }

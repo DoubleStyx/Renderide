@@ -2,11 +2,10 @@
 
 use crate::config::CommandRecordingMode;
 use crate::cpu_parallelism::{FrameParallelPolicy, ParallelAdmission};
+use crate::render_graph::compiled::frame_view::FrameViewTargetKind;
 use crate::render_graph::pass::PassPhase;
 
-use super::{
-    CompiledRenderGraph, FrameView, FrameViewTarget, GraphCommandRecordingPath, PerViewWorkItem,
-};
+use super::{CompiledRenderGraph, FrameView, GraphCommandRecordingPath, PerViewWorkItem};
 
 /// Command-recording strategy and parallelism metadata for one frame.
 #[derive(Clone, Copy)]
@@ -79,7 +78,7 @@ impl CompiledRenderGraph {
         );
         let single_swapchain_encoder_status = single_swapchain_encoder_status(
             views.len(),
-            single_view_targets_swapchain(views),
+            single_view_target_supported(views),
             strategy,
         );
         GraphCommandRecordingPlan {
@@ -102,8 +101,8 @@ impl CompiledRenderGraph {
 pub(in crate::render_graph::compiled::exec) enum SingleSwapchainEncoderStatus {
     /// The frame has more than one graph view.
     MultipleViews,
-    /// The single view does not target the swapchain.
-    NonSwapchainTarget,
+    /// The single view uses a target kind the combined encoder does not support.
+    UnsupportedTarget,
     /// The selected strategy requires phase-specific command buffers.
     SplitRecordingStrategy,
     /// Frame-global work had already been split into multiple encoders.
@@ -117,7 +116,7 @@ impl SingleSwapchainEncoderStatus {
     pub(in crate::render_graph::compiled::exec) const fn as_plot_value(self) -> u64 {
         match self {
             Self::MultipleViews => 0,
-            Self::NonSwapchainTarget => 1,
+            Self::UnsupportedTarget => 1,
             Self::SplitRecordingStrategy => 2,
             Self::FrameGlobalSplitWorkload => 3,
             Self::Active => 4,
@@ -129,7 +128,7 @@ impl SingleSwapchainEncoderStatus {
         match self {
             Self::Active => GraphCommandRecordingPath::SingleSwapchainEncoder,
             Self::MultipleViews
-            | Self::NonSwapchainTarget
+            | Self::UnsupportedTarget
             | Self::SplitRecordingStrategy
             | Self::FrameGlobalSplitWorkload => GraphCommandRecordingPath::StandardCommandBuffers,
         }
@@ -186,8 +185,24 @@ impl GraphCommandRecordingStrategy {
     }
 }
 
-fn single_view_targets_swapchain(views: &[FrameView<'_>]) -> bool {
-    views.len() == 1 && matches!(&views[0].target, FrameViewTarget::Swapchain)
+/// Whether one target kind can record frame-global work, view work, its optional offscreen copy,
+/// and profiler resolve into the same encoder.
+///
+/// All current targets use the same resolved-view recorder. Keeping this exhaustive match makes a
+/// future target opt in deliberately instead of silently inheriting the consolidation path.
+fn single_view_encoder_target_supported(target: FrameViewTargetKind) -> bool {
+    matches!(
+        target,
+        FrameViewTargetKind::Swapchain
+            | FrameViewTargetKind::ExternalMultiview
+            | FrameViewTargetKind::OffscreenRt
+    )
+}
+
+fn single_view_target_supported(views: &[FrameView<'_>]) -> bool {
+    views
+        .first()
+        .is_some_and(|view| single_view_encoder_target_supported(view.target.kind()))
 }
 
 fn select_graph_command_recording_strategy(
@@ -278,15 +293,15 @@ fn in_view_record_parallel_min_work(policy: FrameParallelPolicy) -> usize {
 
 fn single_swapchain_encoder_status(
     view_count: usize,
-    single_view_targets_swapchain: bool,
+    single_view_target_supported: bool,
     strategy: GraphCommandRecordingStrategy,
 ) -> SingleSwapchainEncoderStatus {
     profiling::scope!("graph::recording_path_selection");
     if view_count != 1 {
         return SingleSwapchainEncoderStatus::MultipleViews;
     }
-    if !single_view_targets_swapchain {
-        return SingleSwapchainEncoderStatus::NonSwapchainTarget;
+    if !single_view_target_supported {
+        return SingleSwapchainEncoderStatus::UnsupportedTarget;
     }
     if strategy != GraphCommandRecordingStrategy::Serial {
         return SingleSwapchainEncoderStatus::SplitRecordingStrategy;
@@ -315,10 +330,21 @@ mod tests {
     }
 
     #[test]
-    fn single_swapchain_status_reports_non_swapchain_disable_reason() {
+    fn single_view_encoder_supports_every_current_target_kind() {
+        for target in [
+            FrameViewTargetKind::Swapchain,
+            FrameViewTargetKind::ExternalMultiview,
+            FrameViewTargetKind::OffscreenRt,
+        ] {
+            assert!(single_view_encoder_target_supported(target));
+        }
+    }
+
+    #[test]
+    fn single_swapchain_status_reports_unsupported_target_disable_reason() {
         assert_eq!(
             single_swapchain_encoder_status(1, false, GraphCommandRecordingStrategy::Serial),
-            SingleSwapchainEncoderStatus::NonSwapchainTarget
+            SingleSwapchainEncoderStatus::UnsupportedTarget
         );
     }
 

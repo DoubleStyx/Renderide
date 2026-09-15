@@ -111,7 +111,7 @@ mod tests {
         let worker_cache = Arc::clone(&cache);
         let (tx, rx) = mpsc::sync_channel(1);
         let worker = std::thread::spawn(move || {
-            tx.send(worker_cache.get_cloned(&7)).ok();
+            let _ = tx.send(worker_cache.get_cloned(&7));
         });
 
         assert_eq!(

@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Four milliseconds keeps the work bounded to a quarter of a 60 Hz frame while giving
 /// multi-megabyte texture payloads enough room to make visible progress in one tick.
-pub const DEFAULT_ASSET_INTEGRATION_BUDGET_MS: u32 = 4;
+pub const DEFAULT_ASSET_INTEGRATION_BUDGET_MS: u32 = 2;
 
 /// Rendering toggles and scalars. Persisted as `[rendering]`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -77,6 +77,8 @@ mod tests {
             RenderingSettings::default().asset_integration_budget_ms,
             DEFAULT_ASSET_INTEGRATION_BUDGET_MS
         );
-        assert_eq!(DEFAULT_ASSET_INTEGRATION_BUDGET_MS, 4);
+        // Halved from 4ms: measured 2.746ms of a 22.5ms heavy frame went to asset integration,
+        // and the taper only sheds from this baseline. Streaming is slower per frame by design.
+        assert_eq!(DEFAULT_ASSET_INTEGRATION_BUDGET_MS, 2);
     }
 }

@@ -5,7 +5,6 @@
 //! frustum and previous-frame Hi-Z on compute, and writes the indirect commands consumed by depth,
 //! opaque/alpha-test, and view-normal raster passes.
 
-use std::mem::size_of;
 use std::sync::Arc;
 
 use hashbrown::HashMap;
@@ -19,7 +18,7 @@ use crate::gpu::cull_compact::{
 };
 use crate::gpu::indirect_buffer::IndexedIndirectCommand;
 use crate::gpu_pools::geometry_arena::{ArenaStream, GeometryAllocation, GeometryArena};
-use crate::render_graph::blackboard::{Blackboard, blackboard_slot};
+use crate::graph_inputs::PerViewSubmitRetainedResourcesSlot;
 use crate::render_graph::context::ComputePassCtx;
 use crate::render_graph::error::{RenderPassError, SetupError};
 use crate::render_graph::pass::{ComputePass, PassBuilder};
@@ -27,7 +26,8 @@ use crate::render_graph::resources::{ImportedTextureHandle, TextureAccess};
 use crate::scene::SceneSpaceRead;
 use crate::shared::ShadowCastMode;
 use crate::world_mesh::{
-    DrawGroup, InstancePlan, WorldMeshDrawItem, WorldMeshPhase, depth_prepass_group_eligible,
+    DrawGroup, InstancePlan, WorldMeshDrawItem, WorldMeshDrawList, WorldMeshPhase,
+    depth_prepass_group_eligible,
 };
 
 use super::PreparedWorldMeshForwardFrame;
@@ -40,19 +40,9 @@ use super::normal_pass::{
     WorldMeshForwardNormalPipelineCache, WorldMeshForwardNormalPipelineKey,
     normal_pipeline_key_for_draw,
 };
+use profile::{GpuCullDispatchProfile, StructuralMissReason};
 
-blackboard_slot! {
-    /// Owns every compute resource referenced by this view's GPU-cull command buffer until the
-    /// deferred driver-thread submit takes ownership.
-    pub(crate) WorldMeshGpuCullSubmitResourcesSlot => GpuRetainedResources
-}
-
-/// Removes the GPU-cull submit ownership payload before the per-view blackboard is dropped.
-pub(crate) fn take_gpu_cull_submit_resources(blackboard: &mut Blackboard) -> GpuRetainedResources {
-    blackboard
-        .take::<WorldMeshGpuCullSubmitResourcesSlot>()
-        .unwrap_or_default()
-}
+mod profile;
 
 /// Previous-frame Hi-Z graph input for [`WorldMeshGpuCullPass`].
 #[derive(Clone, Copy, Debug)]
@@ -86,6 +76,7 @@ impl WorldMeshGpuCullViewState {
 #[derive(Default)]
 struct GpuCullStructuralCache {
     entry: Option<GpuCullStructuralCacheEntry>,
+    last_miss: StructuralMissReason,
     next_input_generation: u64,
     structural_hits: u64,
     structural_misses: u64,
@@ -98,7 +89,7 @@ struct GpuCullStructuralCacheEntry {
     plan: Arc<InstancePlan>,
     /// Current draw payload paired with `plan`. Holding the arc lets transform-only draw-plan
     /// reuse skip even the candidate-bounds refresh when the payload itself was retained.
-    draws: Arc<[WorldMeshDrawItem]>,
+    draws: WorldMeshDrawList,
     arena_generation: u64,
     packet_pipeline_counts: Vec<Option<usize>>,
     pending: PendingGpuCullPlan,
@@ -142,34 +133,45 @@ impl GpuCullStructuralCache {
         arena: &GeometryArena,
     ) -> bool {
         let arena_generation = arena.allocation_generation();
+        // Recorded per component: the three have different fixes and the aggregate hit flag cannot
+        // tell them apart. Only meaningful when an entry exists; a cold cache is not a key failure.
+        if let Some(entry) = self.entry.as_ref() {
+            self.last_miss = StructuralMissReason {
+                plan: !Arc::ptr_eq(&entry.plan, &prepared.plan),
+                arena: entry.arena_generation != arena_generation,
+                packets: !packet_pipeline_counts_match(&entry.packet_pipeline_counts, prepared),
+            };
+        } else {
+            self.last_miss = StructuralMissReason::default();
+        }
         let mut hit = self.entry.as_ref().is_some_and(|entry| {
             Arc::ptr_eq(&entry.plan, &prepared.plan)
                 && entry.arena_generation == arena_generation
                 && packet_pipeline_counts_match(&entry.packet_pipeline_counts, prepared)
         });
-        if hit {
-            let entry = self.entry.as_mut().expect("cache hit requires an entry");
-            if !Arc::ptr_eq(&entry.draws, &prepared.draws) {
-                match refresh_pending_gpu_cull_bounds(
-                    &mut entry.pending,
-                    &prepared.plan.slab_layout,
-                    &prepared.draws,
-                ) {
-                    PendingBoundsRefresh::Unchanged => {}
-                    PendingBoundsRefresh::Changed => {
-                        // Candidate bytes embed AABBs. Keep the structural command/run plan, but
-                        // force fresh compute inputs and a new upload generation.
-                        entry.materialized = None;
-                    }
-                    PendingBoundsRefresh::StructureChanged => {
-                        // A space split or slab lookup changed despite equal structural identity.
-                        // Rebuild conservatively instead of retaining a command against the wrong
-                        // render-space matrix.
-                        hit = false;
-                    }
+        if hit
+            && let Some(entry) = self.entry.as_mut()
+            && !Arc::ptr_eq(&entry.draws, &prepared.draws)
+        {
+            match refresh_pending_gpu_cull_bounds(
+                &mut entry.pending,
+                &prepared.plan.slab_layout,
+                &prepared.draws,
+            ) {
+                PendingBoundsRefresh::Unchanged => {}
+                PendingBoundsRefresh::Changed => {
+                    // Candidate bytes embed AABBs. Keep the structural command/run plan, but
+                    // force fresh compute inputs and a new upload generation.
+                    entry.materialized = None;
                 }
-                entry.draws = Arc::clone(&prepared.draws);
+                PendingBoundsRefresh::StructureChanged => {
+                    // A space split or slab lookup changed despite equal structural identity.
+                    // Rebuild conservatively instead of retaining a command against the wrong
+                    // render-space matrix.
+                    hit = false;
+                }
             }
+            entry.draws = Arc::clone(&prepared.draws);
         }
         if hit {
             self.structural_hits = self.structural_hits.saturating_add(1);
@@ -366,6 +368,8 @@ impl WorldMeshGpuCullPass {
             structural,
         } = &mut *state;
         let structural_plan_hit = structural.ensure_plan(prepared, arena);
+        drop(arena_guard);
+        let structural_miss = structural.last_miss;
         let structural_entry = structural.entry()?;
         if structural_entry.pending.candidates.is_empty()
             || structural_entry.pending.runs.is_empty()
@@ -407,6 +411,7 @@ impl WorldMeshGpuCullPass {
         request.static_input_generation = Some(retained_inputs.generation);
         request.output_mode = output_mode;
         request.previous_hiz = previous_views.map(PreviousHiZViews::as_gpu_input);
+        request.profiler = ctx.profiler;
 
         let dispatch = match compaction.encode(ctx.device, ctx.encoder, ctx.uploads, request) {
             Ok(dispatch) => dispatch,
@@ -418,33 +423,21 @@ impl WorldMeshGpuCullPass {
                 return None;
             }
         };
-        let static_input_bytes = retained_inputs
-            .candidates
-            .len()
-            .saturating_mul(size_of::<GpuCullCandidate>())
-            .saturating_add(
-                retained_inputs
-                    .runs
-                    .len()
-                    .saturating_mul(size_of::<GpuCullRun>()),
-            );
-        crate::profiling::plot_world_mesh_gpu_cull_cache(
-            crate::profiling::WorldMeshGpuCullCacheProfileSample {
-                structural_hit: structural_plan_hit,
-                input_hit: retained_inputs.cache_hit,
-                static_upload_bytes: dispatch
-                    .static_inputs_uploaded
-                    .then_some(static_input_bytes)
-                    .unwrap_or(0),
-                avoided_static_upload_bytes: (!dispatch.static_inputs_uploaded)
-                    .then_some(static_input_bytes)
-                    .unwrap_or(0),
-                matrix_upload_bytes: matrix_plan
-                    .matrices
-                    .len()
-                    .saturating_mul(size_of::<GpuCullMatrix>()),
-            },
-        );
+        let dispatch_profile = GpuCullDispatchProfile {
+            view_id: ctx.frame.view.view_id,
+            structural_hit: structural_plan_hit,
+            input_hit: retained_inputs.cache_hit,
+            structural_miss,
+            input_candidate_count: retained_inputs.candidates.len(),
+            input_run_count: retained_inputs.runs.len(),
+            matrix_count: matrix_plan.matrices.len(),
+            dispatch,
+            structural_hits: structural.structural_hits,
+            structural_misses: structural.structural_misses,
+            materialized_hits: structural.materialized_hits,
+            materialized_misses: structural.materialized_misses,
+        };
+        profile::plot_dispatch(&dispatch_profile);
         let result_runs = structural.result_runs(compaction, dispatch.output_mode)?;
         let result = WorldMeshGpuCullResult {
             indirect_buffer: compaction.output_buffer().clone(),
@@ -453,28 +446,11 @@ impl WorldMeshGpuCullPass {
             normal_runs: result_runs.normal_runs,
             forward_opaque_runs: result_runs.forward_opaque_runs,
             forward_alpha_test_runs: result_runs.forward_alpha_test_runs,
-            candidate_count: dispatch.candidate_count,
         };
-        logger::trace!(
-            "GPU world-mesh cull {:?}: {} candidates across {} runs ({:?}), plan_cache={}, input_cache={}, static_upload={}, totals=plan({}/{}) inputs({}/{})",
-            ctx.frame.view.view_id,
-            result.candidate_count,
-            retained_inputs.runs.len(),
-            dispatch.output_mode,
-            if structural_plan_hit { "hit" } else { "miss" },
-            if retained_inputs.cache_hit {
-                "hit"
-            } else {
-                "miss"
-            },
-            dispatch.static_inputs_uploaded,
-            structural.structural_hits,
-            structural.structural_misses,
-            structural.materialized_hits,
-            structural.materialized_misses,
-        );
+        profile::trace_dispatch(&dispatch_profile);
         let mut submit_resources = GpuRetainedResources::new();
         compaction.retain_submit_resources(&mut submit_resources);
+        drop(state);
         Some((result, submit_resources))
     }
 }
@@ -497,7 +473,7 @@ impl ComputePass for WorldMeshGpuCullPass {
         b.async_compute_capable();
         b.read_optional_blackboard::<super::WorldMeshForwardPlanSlot>();
         b.write_blackboard::<super::WorldMeshForwardPlanSlot>();
-        b.write_blackboard::<WorldMeshGpuCullSubmitResourcesSlot>();
+        b.write_blackboard::<PerViewSubmitRetainedResourcesSlot>();
         b.import_texture(
             self.resources.hi_z_previous,
             TextureAccess::Sampled {
@@ -536,7 +512,7 @@ impl ComputePass for WorldMeshGpuCullPass {
         if let Some((result, submit_resources)) = self.encode_view(ctx, &prepared) {
             prepared.gpu_cull = Some(result);
             ctx.blackboard
-                .insert::<WorldMeshGpuCullSubmitResourcesSlot>(submit_resources);
+                .insert::<PerViewSubmitRetainedResourcesSlot>(submit_resources);
         } else {
             prepared.gpu_cull = None;
         }
@@ -1054,8 +1030,6 @@ pub(super) struct WorldMeshGpuCullResult {
     pub(super) normal_runs: Arc<[GpuCulledNormalRun]>,
     pub(super) forward_opaque_runs: Arc<[GpuCulledForwardRun]>,
     pub(super) forward_alpha_test_runs: Arc<[GpuCulledForwardRun]>,
-    /// Number of retained commands evaluated by compute (including per-space instance splits).
-    pub(super) candidate_count: u32,
 }
 
 impl WorldMeshGpuCullResult {

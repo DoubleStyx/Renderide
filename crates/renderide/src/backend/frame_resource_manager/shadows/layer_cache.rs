@@ -14,13 +14,14 @@ use hashbrown::{HashMap, HashSet};
 
 use crate::gpu_pools::MeshPool;
 use crate::render_phase::RenderPhaseSet;
-use crate::world_mesh::{DrawGroup, WorldMeshDrawItem, WorldMeshPhase};
+use crate::world_mesh::{DrawGroup, WorldMeshPhase};
 
 use super::{ShadowCasterContentHash, ShadowPlanningCacheStats, ShadowViewSignature};
+use crate::world_mesh::WorldMeshDrawList;
 
 /// Strong-owned visibility result for one immutable caster packet and exact shadow view.
 struct ShadowVisibilityCacheEntry {
-    source_draws: Arc<[WorldMeshDrawItem]>,
+    source_draws: WorldMeshDrawList,
     signature: ShadowViewSignature,
     groups: Arc<RenderPhaseSet<WorldMeshPhase, DrawGroup>>,
     visible_group_count: usize,
@@ -95,6 +96,8 @@ struct HeldCascade {
 
 /// Result of acquiring a persistent layer for one planned shadow view.
 pub(super) struct ShadowLayerLease {
+    /// Key the lease actually resolved to, after any same-frame collision was broken.
+    pub(super) key: u64,
     /// Atlas array layer assigned to the light identity.
     pub(super) layer: u32,
     /// Light-parameter signature of valid rendered contents already in the layer.
@@ -117,7 +120,13 @@ pub(super) struct ShadowVisibilityLease {
 /// Persistent shadow layer allocator and reuse tracker.
 pub(in crate::backend::frame_resource_manager) struct ShadowLayerCache {
     entries: HashMap<u64, ShadowLayerCacheEntry>,
-    free_layers: Vec<u32>,
+    /// Released atlas layers, lowest first.
+    ///
+    /// Order matters: the static depth store only covers the atlas's low layers, so handing out the
+    /// lowest free index keeps the live set packed inside that coverage. A LIFO free list would
+    /// scatter a ~10 layer working set across the session's high-water range and miss the store
+    /// almost every time. -xlinka
+    free_layers: std::collections::BinaryHeap<std::cmp::Reverse<u32>>,
     layer_count: u32,
     frame: u64,
     hasher: hashbrown::DefaultHashBuilder,
@@ -133,7 +142,7 @@ impl ShadowLayerCache {
     pub(in crate::backend::frame_resource_manager) fn new() -> Self {
         Self {
             entries: HashMap::new(),
-            free_layers: Vec::new(),
+            free_layers: std::collections::BinaryHeap::new(),
             layer_count: 0,
             frame: 0,
             hasher: hashbrown::DefaultHashBuilder::default(),
@@ -206,17 +215,46 @@ impl ShadowLayerCache {
     /// leave that band of the world without shadow depth, which reads as shadows vanishing as you
     /// walk, so coverage is verified rather than assumed.
     pub(super) fn held_cascade_projection(
-        &self,
+        &mut self,
         key: u64,
         wanted: super::cascade::CascadeBounds,
         cadence_frames: u64,
     ) -> Option<glam::Mat4> {
-        let held = self.entries.get(&key)?.held_cascade?;
+        let (reused, aged_out) = self.held_cascade_projection_inner(key, wanted, cadence_frames);
+        let stats = &mut self.frame_stats;
+        if reused.is_some() {
+            stats.cascade_hold_hits = stats.cascade_hold_hits.saturating_add(1);
+        } else if aged_out {
+            stats.cascade_hold_age_misses = stats.cascade_hold_age_misses.saturating_add(1);
+        } else {
+            stats.cascade_hold_coverage_misses =
+                stats.cascade_hold_coverage_misses.saturating_add(1);
+        }
+        reused
+    }
+
+    /// The hold test itself, split out so the counters wrap every exit path.
+    ///
+    /// Returns the reusable projection and whether the miss was the cadence aging out, as opposed
+    /// to the pinned sphere no longer covering the slice. The two have opposite fixes: aging out
+    /// wants a longer cadence, which is free, while a coverage miss wants more radius slack, which
+    /// costs texel density.
+    fn held_cascade_projection_inner(
+        &self,
+        key: u64,
+        wanted: super::cascade::CascadeBounds,
+        cadence_frames: u64,
+    ) -> (Option<glam::Mat4>, bool) {
+        let Some(held) = self.entries.get(&key).and_then(|entry| entry.held_cascade) else {
+            // Nothing pinned yet: the first fit of a cascade is neither kind of miss, but counting
+            // it as an age miss keeps the two buckets summing to the total.
+            return (None, true);
+        };
         if self.frame.saturating_sub(held.fitted_frame) >= cadence_frames {
-            return None;
+            return (None, true);
         }
         let covers = held.center.distance(wanted.center) + wanted.radius <= held.radius;
-        covers.then_some(held.view_proj)
+        (covers.then_some(held.view_proj), false)
     }
 
     /// Pins `view_proj` as this cascade's projection until it ages out or stops covering the slice.
@@ -252,10 +290,23 @@ impl ShadowLayerCache {
 
     /// Acquires the persistent layer for `key` and marks it used this frame.
     pub(super) fn acquire(&mut self, key: u64) -> ShadowLayerLease {
+        // Layer keys are a hash of light identity by value, so two same-type lights sharing a
+        // position and direction collide. Colliding views would then share one atlas layer and
+        // stomp each other's signatures every frame, so nothing in the group could ever reuse its
+        // depth. Walk to the next unclaimed key instead. A stable light set resolves to the same
+        // keys every frame, so cross-frame reuse is unaffected. -xlinka
+        let mut key = key;
+        while self
+            .entries
+            .get(&key)
+            .is_some_and(|entry| entry.last_used_frame == self.frame)
+        {
+            key = key.wrapping_mul(0x9e37_79b9_7f4a_7c15).rotate_left(31) ^ 0xd6e8_feb8_6659_fd93;
+        }
         let free_layers = &mut self.free_layers;
         let layer_count = &mut self.layer_count;
         let entry = self.entries.entry(key).or_insert_with(|| {
-            let layer = free_layers.pop().unwrap_or_else(|| {
+            let layer = free_layers.pop().map(|lowest| lowest.0).unwrap_or_else(|| {
                 let layer = *layer_count;
                 *layer_count = layer_count.saturating_add(1);
                 layer
@@ -273,6 +324,7 @@ impl ShadowLayerCache {
         });
         entry.last_used_frame = self.frame;
         ShadowLayerLease {
+            key,
             layer: entry.layer,
             rendered_params_sig: entry.rendered.then_some(entry.params_sig),
             rendered_caster_sig: entry.rendered.then_some(entry.caster_sig).flatten(),
@@ -282,7 +334,12 @@ impl ShadowLayerCache {
     }
 
     /// Records that the static depth store now holds `caster_sig` rendered under `params_sig`.
-    pub(super) fn mark_static_store_rendered(&mut self, key: u64, params_sig: u64, caster_sig: u64) {
+    pub(super) fn mark_static_store_rendered(
+        &mut self,
+        key: u64,
+        params_sig: u64,
+        caster_sig: u64,
+    ) {
         if let Some(entry) = self.entries.get_mut(&key) {
             entry.static_store = Some(StaticStoreContents {
                 params_sig,
@@ -302,7 +359,7 @@ impl ShadowLayerCache {
     pub(super) fn cached_visibility(
         &mut self,
         key: u64,
-        source_draws: &Arc<[WorldMeshDrawItem]>,
+        source_draws: &WorldMeshDrawList,
         signature: ShadowViewSignature,
     ) -> Option<ShadowVisibilityLease> {
         let cached = self.entries.get(&key)?.visibility.as_ref()?;
@@ -329,7 +386,7 @@ impl ShadowLayerCache {
     pub(super) fn store_visibility(
         &mut self,
         key: u64,
-        source_draws: Arc<[WorldMeshDrawItem]>,
+        source_draws: WorldMeshDrawList,
         signature: ShadowViewSignature,
         lease: &ShadowVisibilityLease,
         candidate_group_count: usize,
@@ -354,7 +411,7 @@ impl ShadowLayerCache {
     pub(super) fn cached_caster_content_hash(
         &mut self,
         key: u64,
-        source_draws: &Arc<[WorldMeshDrawItem]>,
+        source_draws: &WorldMeshDrawList,
         signature: ShadowViewSignature,
     ) -> Option<ShadowCasterContentHash> {
         let mesh_generation = self.stable_mesh_generation()?;
@@ -378,7 +435,7 @@ impl ShadowLayerCache {
     pub(super) fn store_caster_content_hash(
         &mut self,
         key: u64,
-        source_draws: &Arc<[WorldMeshDrawItem]>,
+        source_draws: &WorldMeshDrawList,
         signature: ShadowViewSignature,
         content: ShadowCasterContentHash,
     ) {
@@ -434,7 +491,7 @@ impl ShadowLayerCache {
         self.entries.retain(|_, entry| {
             let keep = entry.last_used_frame == frame;
             if !keep {
-                free_layers.push(entry.layer);
+                free_layers.push(std::cmp::Reverse(entry.layer));
             }
             keep
         });
@@ -524,6 +581,22 @@ mod tests {
     }
 
     #[test]
+    fn coincident_lights_sharing_a_key_get_their_own_layers() {
+        let mut cache = ShadowLayerCache::new();
+        cache.begin_frame(None);
+        let first = cache.acquire(9);
+        let second = cache.acquire(9);
+        assert_ne!(first.key, second.key);
+        assert_ne!(first.layer, second.layer);
+
+        // The broken-out key has to be the same one next frame, or neither light ever reuses.
+        cache.evict_unused();
+        cache.begin_frame(None);
+        assert_eq!(cache.acquire(9).layer, first.layer);
+        assert_eq!(cache.acquire(9).layer, second.layer);
+    }
+
+    #[test]
     fn distinct_keys_get_distinct_layers() {
         let mut cache = ShadowLayerCache::new();
         cache.begin_frame(None);
@@ -531,6 +604,28 @@ mod tests {
         let b = cache.acquire(2).layer;
         assert_ne!(a, b);
         assert_eq!(cache.layer_count(), 2);
+    }
+
+    #[test]
+    fn the_lowest_free_layer_is_handed_out_first() {
+        // The static depth store only covers the atlas's low layers, so a released low index has to
+        // come back before a higher one or the live set drifts out of coverage.
+        let mut cache = ShadowLayerCache::new();
+        cache.begin_frame(None);
+        assert_eq!(cache.acquire(1).layer, 0);
+        assert_eq!(cache.acquire(2).layer, 1);
+        assert_eq!(cache.acquire(3).layer, 2);
+
+        // Drop 0 and 1, keep 2 alive.
+        cache.begin_frame(None);
+        cache.acquire(3);
+        cache.evict_unused();
+
+        cache.begin_frame(None);
+        cache.acquire(3);
+        assert_eq!(cache.acquire(4).layer, 0);
+        assert_eq!(cache.acquire(5).layer, 1);
+        assert_eq!(cache.layer_count(), 3);
     }
 
     #[test]

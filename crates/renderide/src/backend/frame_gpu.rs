@@ -397,6 +397,7 @@ impl PerViewSceneSnapshots {
         &self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
+        profiler: Option<&crate::profiling::GpuProfilerHandle>,
         source_depth: &wgpu::Texture,
         viewport: (u32, u32),
         multiview: bool,
@@ -404,6 +405,7 @@ impl PerViewSceneSnapshots {
         self.set.encode_depth_blit(
             device,
             encoder,
+            profiler,
             source_depth,
             SceneSnapshotLayout::from_multiview(multiview),
             viewport,

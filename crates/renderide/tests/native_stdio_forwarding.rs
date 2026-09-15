@@ -3,7 +3,7 @@
 //! This binary runs in its own process so the global logger is not initialized by other unit tests.
 
 use std::io::Write;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 #[test]
 fn stdout_redirected_to_log_under_temp_logs_root() {
@@ -35,13 +35,20 @@ fn stdout_redirected_to_log_under_temp_logs_root() {
     const MARKER: &str = "RENDERIDE_STDIO_REDIRECT_TEST_MARKER";
     writeln!(std::io::stdout(), "{MARKER}").expect("write stdout");
 
-    logger::flush();
-    std::thread::sleep(Duration::from_millis(150));
-
-    let contents = std::fs::read_to_string(&log_path).expect("read log");
-    assert!(
-        contents.contains(MARKER),
-        "expected log file to contain forwarded stdout line; got len {}",
-        contents.len()
-    );
+    // Forwarding is asynchronous. Flush after each read attempt so the pipe reader's log write is
+    // made visible regardless of whether it ran before or after the initial stdout write returned.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        logger::flush();
+        let contents = std::fs::read_to_string(&log_path).expect("read log");
+        if contents.contains(MARKER) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "expected log file to contain forwarded stdout line; got len {}",
+            contents.len()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }

@@ -3,11 +3,14 @@ use crate::materials::host_data::{
     MaterialDictionary, MaterialPropertyStore, MaterialPropertyValue, PropertyIdRegistry,
 };
 use crate::materials::{
-    EmbeddedTangentFallbackMode, MaterialPipelinePropertyIds, MaterialRouter, RasterPipelineKind,
+    EmbeddedTangentFallbackMode, MaterialPipelinePropertyIds, MaterialRouter, RasterFrontFace,
+    RasterPipelineKind, RasterPrimitiveTopology,
 };
 
 use super::{FrameMaterialBatchCache, PendingMaterialResolve, TouchOutcome};
-use crate::world_mesh::materials::MaterialResolveCtx;
+use crate::world_mesh::materials::{
+    MaterialResolveCtx, batch_key_for_slot_cached, compute_batch_key_hash,
+};
 
 fn make_test_deps() -> (MaterialPropertyStore, MaterialRouter, PropertyIdRegistry) {
     let store = MaterialPropertyStore::new();
@@ -62,6 +65,39 @@ fn first_touch_resolves_and_inserts_entry() {
     assert!(cache.get(42, None).is_some());
     // Unknown material id -> shader id -1.
     assert_eq!(cache.get(42, None).unwrap().shader_asset_id, -1);
+}
+
+#[test]
+fn cached_batch_hash_matches_every_draw_local_raster_variant() {
+    let (store, router, reg) = make_test_deps();
+    let dict = MaterialDictionary::new(&store);
+    let ids = MaterialPipelinePropertyIds::new(&reg);
+    let ctx = make_ctx(&dict, &router, &ids, ShaderPermutation::default());
+    let mut cache = FrameMaterialBatchCache::new();
+    touch(&mut cache, 42, Some(7), ctx, 1);
+
+    for skinned in [false, true] {
+        for front_face in [
+            RasterFrontFace::Clockwise,
+            RasterFrontFace::CounterClockwise,
+        ] {
+            for primitive_topology in [
+                RasterPrimitiveTopology::TriangleList,
+                RasterPrimitiveTopology::PointList,
+            ] {
+                let (batch_key, _, cached_hash) = batch_key_for_slot_cached(
+                    42,
+                    Some(7),
+                    skinned,
+                    front_face,
+                    primitive_topology,
+                    &cache,
+                    ctx,
+                );
+                assert_eq!(cached_hash, Some(compute_batch_key_hash(&batch_key)));
+            }
+        }
+    }
 }
 
 #[test]

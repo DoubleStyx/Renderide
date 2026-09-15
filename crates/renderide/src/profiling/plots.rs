@@ -40,7 +40,7 @@ pub use rayon_admission::{RayonAdmissionProfileSample, plot_rayon_admission};
 pub use render_world::{RenderWorldMaintenanceProfileSample, plot_render_world_maintenance};
 pub use shadow_atlas::{
     ShadowCacheProfileSample, plot_frame_global_split, plot_shadow_atlas, plot_shadow_cache,
-    plot_shadow_static_split,
+    plot_shadow_full_redraw_reasons, plot_shadow_static_split,
 };
 pub use world_mesh_indirect::{
     WorldMeshDrawPlanCacheProfileSample, WorldMeshGeometryArenaProfileSample,
@@ -52,4 +52,7 @@ pub use world_mesh_indirect::{
 pub use world_mesh_indirect::{
     WorldMeshForwardIndirectProfileSample, plot_world_mesh_forward_indirect,
 };
-pub use world_mesh_prepare::plot_world_mesh_prepare;
+pub use world_mesh_prepare::{
+    WorldMeshInstancePlanCacheProfileSample, plot_world_mesh_instance_plan_cache,
+    plot_world_mesh_prepare,
+};

@@ -159,6 +159,12 @@ pub struct WorldMeshGpuCullCacheProfileSample {
     pub avoided_static_upload_bytes: usize,
     /// Small camera/history matrix payload that remains frame-varying.
     pub matrix_upload_bytes: usize,
+    /// Structural miss because the retained instance plan is a different allocation.
+    pub structural_miss_plan: bool,
+    /// Structural miss because the geometry arena reallocated or compacted.
+    pub structural_miss_arena: bool,
+    /// Structural miss because a material packet's pipeline count changed.
+    pub structural_miss_packets: bool,
 }
 
 /// Records retained GPU-cull cache effectiveness for one view dispatch.
@@ -183,6 +189,20 @@ pub fn plot_world_mesh_gpu_cull_cache(sample: WorldMeshGpuCullCacheProfileSample
         "world_mesh::gpu_cull_matrix_upload_bytes",
         sample.matrix_upload_bytes as f64
     );
+    // The three key components, plotted separately: they have different fixes, and the aggregate
+    // hit flag cannot tell them apart.
+    tracy_plot!(
+        "world_mesh::gpu_cull_structural_miss_plan",
+        f64::from(u8::from(sample.structural_miss_plan))
+    );
+    tracy_plot!(
+        "world_mesh::gpu_cull_structural_miss_arena",
+        f64::from(u8::from(sample.structural_miss_arena))
+    );
+    tracy_plot!(
+        "world_mesh::gpu_cull_structural_miss_packets",
+        f64::from(u8::from(sample.structural_miss_packets))
+    );
 }
 
 /// Per-frame retained CPU draw-plan cache result.
@@ -196,6 +216,10 @@ pub struct WorldMeshDrawPlanCacheProfileSample {
     pub reused_views: usize,
     /// Number of world/shadow/overlay draw rows reused on the hit.
     pub reused_draws: usize,
+    /// Cumulative frames whose shadow-caster collection was skipped outright.
+    pub shadow_collection_hits: u64,
+    /// Cumulative frames whose shadow-caster collection had to run.
+    pub shadow_collection_misses: u64,
 }
 
 /// Records whether retained view plans removed CPU collection/sort work this frame.
@@ -215,6 +239,16 @@ pub fn plot_world_mesh_draw_plan_cache(sample: WorldMeshDrawPlanCacheProfileSamp
     tracy_plot!(
         "world_mesh::draw_plan_cache_reused_draws",
         sample.reused_draws as f64
+    );
+    // Cumulative: read the slope. A flat hit line means the fingerprint never matches, which is how
+    // the previous attempt at this cache failed silently.
+    tracy_plot!(
+        "world_mesh::shadow_collection_hits",
+        sample.shadow_collection_hits as f64
+    );
+    tracy_plot!(
+        "world_mesh::shadow_collection_misses",
+        sample.shadow_collection_misses as f64
     );
 }
 

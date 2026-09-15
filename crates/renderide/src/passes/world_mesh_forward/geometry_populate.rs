@@ -66,6 +66,10 @@ impl EncoderPass for GeometryArenaPopulatePass {
         }))
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "geometry population deliberately keeps one write-guarded synchronization transaction in one orchestration function"
+    )]
     fn record(&self, ctx: &mut EncoderPassCtx<'_, '_, '_>) -> Result<(), RenderPassError> {
         profiling::scope!("world_mesh_forward::geometry_arena_populate");
         let frame = &ctx.frame;
@@ -88,8 +92,7 @@ impl EncoderPass for GeometryArenaPopulatePass {
         };
 
         let mut guard = arena_arc.write();
-        let mut initial_mesh_order = None;
-        if guard.is_none() {
+        let initial_mesh_order = if guard.is_none() {
             let mut asset_ids = populate_plan.mesh_asset_ids.to_vec();
             // Wide/sparse stream layouts must receive low base-vertex offsets. Otherwise one rare
             // 64-byte stream appearing late forces a mostly empty buffer spanning every earlier
@@ -112,13 +115,16 @@ impl EncoderPass for GeometryArenaPopulatePass {
                 return Ok(());
             };
             *guard = Some(arena);
-            initial_mesh_order = Some(asset_ids);
-        }
-        let arena = guard
-            .as_mut()
-            .expect("geometry arena was initialized above");
+            Some(asset_ids)
+        } else {
+            None
+        };
+        let Some(arena) = guard.as_mut() else {
+            return Ok(());
+        };
         arena.synchronize_mesh_pool(mesh_pool);
-        let reclaim = arena.reclaim_high_water_at_frame_boundary(ctx.device, ctx.encoder);
+        let reclaim =
+            arena.reclaim_high_water_at_frame_boundary(ctx.device, ctx.encoder, ctx.profiler);
         profile.compaction_evaluated = reclaim.evaluated;
         profile.compaction_reclaimed_bytes = reclaim.reclaimed_bytes;
         profile.compaction_copy_bytes = reclaim.copy_bytes;
@@ -164,6 +170,7 @@ impl EncoderPass for GeometryArenaPopulatePass {
                 let allocation = arena.ensure_mesh(
                     ctx.device,
                     ctx.encoder,
+                    ctx.profiler,
                     mesh_asset_id,
                     &MeshStreamSources {
                         position,
@@ -191,6 +198,7 @@ impl EncoderPass for GeometryArenaPopulatePass {
                 let allocation = arena.ensure_optional_streams(
                     ctx.device,
                     ctx.encoder,
+                    ctx.profiler,
                     mesh_asset_id,
                     &optional,
                 );
@@ -212,6 +220,7 @@ impl EncoderPass for GeometryArenaPopulatePass {
         }
         profile.allocated_bytes = arena.allocated_bytes();
         profile.resident_allocation_bytes = arena.resident_allocation_bytes();
+        drop(guard);
         crate::profiling::plot_world_mesh_geometry_arena(profile);
         Ok(())
     }

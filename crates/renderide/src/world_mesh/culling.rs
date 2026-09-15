@@ -18,11 +18,12 @@ use crate::scene::SceneSpaceRead;
 #[cfg(test)]
 pub(crate) use eval::mesh_draw_passes_cpu_cull;
 pub(crate) use eval::{
-    CpuCullFailure, mesh_cpu_cull_with_geometry, overlay_rect_clip_visible,
-    world_aabb_visible_for_cull,
+    CpuCullFailure, mesh_cpu_cull_after_spatial_frustum_with_geometry, mesh_cpu_cull_with_geometry,
+    overlay_rect_clip_visible, world_aabb_visible_for_cull, world_aabb_visible_for_cull_with_view,
 };
 pub(crate) use geometry::{
     MeshCullGeometry, MeshCullTarget, mesh_world_geometry_for_cull_with_head,
+    mesh_world_geometry_for_rigid_override,
 };
 
 /// Host camera + projection bundle for [`super::draw_prep::queue_draws_with_parallelism`].

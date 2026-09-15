@@ -174,12 +174,15 @@ impl<'views, 'backend> ExtractedFrame<'views, 'backend> {
             let snapshots = gather_view_cull_snapshots(&self.shared, self.prepared_views.plans());
             refresh_cached_view_cull_snapshots(&mut view_draws, snapshots);
             let reused_draws = draw_plan_count(&view_draws);
+            let shadow_counters = cache.shadow_collection_counters();
             crate::profiling::plot_world_mesh_draw_plan_cache(
                 crate::profiling::WorldMeshDrawPlanCacheProfileSample {
                     hit: true,
                     gpu_static_hit: hit_kind == WorldMeshDrawPlanCacheHit::GpuStatic,
                     reused_views: view_draws.len(),
                     reused_draws,
+                    shadow_collection_hits: shadow_counters.0,
+                    shadow_collection_misses: shadow_counters.1,
                 },
             );
             return PreparedDraws {
@@ -190,8 +193,13 @@ impl<'views, 'backend> ExtractedFrame<'views, 'backend> {
         if exact_fingerprint.is_none() || gpu_static_fingerprint.is_none() {
             cache.note_uncacheable();
         }
+        let shadow_counters = cache.shadow_collection_counters();
         crate::profiling::plot_world_mesh_draw_plan_cache(
-            crate::profiling::WorldMeshDrawPlanCacheProfileSample::default(),
+            crate::profiling::WorldMeshDrawPlanCacheProfileSample {
+                shadow_collection_hits: shadow_counters.0,
+                shadow_collection_misses: shadow_counters.1,
+                ..Default::default()
+            },
         );
         let mesh_pool = self.shared.mesh_pool;
         let retain_gpu_static_candidates = self.shared.retain_gpu_static_candidates;
@@ -206,6 +214,7 @@ impl<'views, 'backend> ExtractedFrame<'views, 'backend> {
             })
             .collect::<Vec<_>>();
         let mut prepared = sort(self.queue_draws());
+        cache.finish_shadow_collection(&mut prepared.view_draws);
         if let (Some(exact), Some(gpu_static)) = (exact_fingerprint, gpu_static_fingerprint) {
             let shadow_eligible = prepared
                 .view_draws
@@ -319,12 +328,12 @@ fn hash_draw_filter(
             1u8.hash(hasher);
             let mut ids = only.iter().copied().collect::<Vec<_>>();
             ids.sort_unstable();
-            ids.hash(hasher);
+            ids.as_slice().hash(hasher);
         }
     }
     let mut excluded = filter.exclude.iter().copied().collect::<Vec<_>>();
     excluded.sort_unstable();
-    excluded.hash(hasher);
+    excluded.as_slice().hash(hasher);
 }
 
 fn hash_host_camera(camera: &crate::camera::HostCameraFrame, hasher: &mut impl std::hash::Hasher) {
@@ -457,6 +466,10 @@ pub(crate) struct WorldMeshDrawPlanFrameCache {
 #[derive(Default)]
 struct WorldMeshDrawPlanCacheState {
     cached: Option<CachedDrawFrame>,
+    /// Last frame's arranged shadow-caster plans and the fingerprint that produced them.
+    shadow_collection: Option<(u64, Vec<WorldMeshDrawPlan>)>,
+    /// Fingerprint chosen this frame, and whether it matched.
+    pending_shadow: Option<(u64, bool)>,
     stats: WorldMeshDrawPlanCacheStats,
 }
 
@@ -489,6 +502,10 @@ pub(crate) struct WorldMeshDrawPlanCacheStats {
     pub(crate) reused_draws: u64,
     /// Shadow-caster plans reused on a world-plan miss (per-plan-type reuse across particle churn).
     pub(crate) shadow_plans_reused: u64,
+    /// Frames whose shadow-caster collection was skipped by the static content fingerprint.
+    pub(crate) shadow_collection_hits: u64,
+    /// Frames whose shadow-caster collection had to run.
+    pub(crate) shadow_collection_misses: u64,
 }
 
 impl WorldMeshDrawPlanFrameCache {
@@ -542,6 +559,70 @@ impl WorldMeshDrawPlanFrameCache {
     ///
     /// Both plans must be camera-independent and GPU-static; retaining the cached `Arc` preserves
     /// source identity for downstream shadow caches.
+    /// Reuses shadow-caster plans whose collection inputs are byte-identical to last frame's.
+    ///
+    /// Keyed on a content fingerprint of the prepared snapshot, filter masks and LOD selection, not
+    /// on gpu-static eligibility. Shadow casters are never camera-frustum-culled, so LOD selection
+    /// is their only camera dependency and the fingerprint captures it. A camera move that flips no
+    /// LOD reuses the whole set. -xlinka
+    /// Decides whether shadow-caster collection can be skipped for `fingerprint`.
+    ///
+    /// Returns `true` when the collection must run. Keyed on a content fingerprint that folds the
+    /// render world's STATIC generation, not `prepared_generation`: particles bump the latter every
+    /// frame, which is exactly what left the world draw-plan cache at zero hits. -xlinka
+    pub(in crate::runtime) fn admit_shadow_collection(&self, fingerprint: u64) -> bool {
+        let mut guard = self.inner.lock();
+        let hit = guard
+            .shadow_collection
+            .as_ref()
+            .is_some_and(|(cached, _)| *cached == fingerprint);
+        guard.pending_shadow = Some((fingerprint, hit));
+        if hit {
+            guard.stats.shadow_collection_hits =
+                guard.stats.shadow_collection_hits.saturating_add(1);
+        } else {
+            guard.stats.shadow_collection_misses =
+                guard.stats.shadow_collection_misses.saturating_add(1);
+        }
+        !hit
+    }
+
+    /// Clears any pending decision when reuse could not be attempted this frame.
+    pub(in crate::runtime) fn skip_shadow_collection_reuse(&self) {
+        self.inner.lock().pending_shadow = None;
+    }
+
+    /// Substitutes reused shadow plans, or stores this frame's, per the recorded decision.
+    pub(in crate::runtime) fn finish_shadow_collection(
+        &self,
+        views: &mut [ViewWorldMeshDrawPlans],
+    ) {
+        let pending = self.inner.lock().pending_shadow.take();
+        let Some((fingerprint, hit)) = pending else {
+            return;
+        };
+        if hit {
+            let mut guard = self.inner.lock();
+            let reused = match guard.shadow_collection.as_ref() {
+                Some((cached, plans)) if *cached == fingerprint && plans.len() == views.len() => {
+                    for (view, plan) in views.iter_mut().zip(plans.iter()) {
+                        view.shadow_casters = plan.clone();
+                    }
+                    views.len()
+                }
+                _ => 0,
+            };
+            guard.stats.shadow_plans_reused =
+                guard.stats.shadow_plans_reused.saturating_add(reused as u64);
+            return;
+        }
+        let plans = views
+            .iter()
+            .map(|view| view.shadow_casters.clone())
+            .collect::<Vec<_>>();
+        self.inner.lock().shadow_collection = Some((fingerprint, plans));
+    }
+
     fn reuse_shadow_plans(
         &self,
         gpu_static_fingerprint: u64,
@@ -597,6 +678,15 @@ impl WorldMeshDrawPlanFrameCache {
     #[cfg(test)]
     pub(crate) fn stats(&self) -> WorldMeshDrawPlanCacheStats {
         self.inner.lock().stats
+    }
+
+    /// Cumulative shadow-collection hit and miss counts, for profiling plots.
+    fn shadow_collection_counters(&self) -> (u64, u64) {
+        let guard = self.inner.lock();
+        (
+            guard.stats.shadow_collection_hits,
+            guard.stats.shadow_collection_misses,
+        )
     }
 }
 
@@ -1569,6 +1659,11 @@ mod tests {
         );
         assert_eq!(inputs.view_origin_world, plan.view_origin_world());
         assert!(inputs.culling.is_none());
+        assert!(
+            inputs.needs_world_bounds,
+            "casters must still resolve world bounds, or every per-cascade visibility test \
+             trivially passes and the shadow cull does nothing"
+        );
         assert!(inputs.lod_selection_culling.is_some());
         assert!(inputs.transform_filter.is_some());
         assert_eq!(inputs.transform_filter_space, Some(RenderSpaceId(99)));

@@ -27,6 +27,10 @@ fn identity_transform() -> RenderTransform {
 }
 
 /// Builds a pre-record layout for pure frame-resource planning tests.
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "the test fixture deliberately mirrors the independent boolean layout flags"
+)]
 fn pre_record_layout(
     width: u32,
     height: u32,

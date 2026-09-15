@@ -21,6 +21,8 @@ pub(in crate::runtime) struct RuntimeTickState {
     started_at: Instant,
     /// Elapsed renderer runtime in seconds captured at the start of the current tick.
     frame_time_seconds: f32,
+    /// Wall-clock duration of the tick before this one.
+    previous_frame_duration: Duration,
     /// Set when asset integration completed for the current winit tick.
     did_integrate_this_tick: bool,
     /// Set after one sliced reflection-probe IBL step is admitted this tick. -xlinka
@@ -70,6 +72,7 @@ impl RuntimeTickState {
         Self {
             started_at,
             frame_time_seconds: 0.0,
+            previous_frame_duration: Duration::ZERO,
             did_integrate_this_tick: false,
             did_advance_reflection_probe_ibl_this_tick: false,
             frame_timing_excluded_wait: Duration::ZERO,
@@ -102,12 +105,32 @@ impl RuntimeTickState {
 
     /// Captures the frame-start wall clock for material shader time inputs.
     pub(in crate::runtime) fn note_frame_wall_clock_begin(&mut self, now: Instant) {
-        self.frame_time_seconds = now.saturating_duration_since(self.started_at).as_secs_f32();
+        let elapsed = now.saturating_duration_since(self.started_at).as_secs_f32();
+        self.previous_frame_duration =
+            Duration::from_secs_f32((elapsed - self.frame_time_seconds).max(0.0));
+        self.frame_time_seconds = elapsed;
     }
 
     /// Elapsed renderer runtime in seconds captured at the start of the current tick.
     pub(in crate::runtime) fn frame_time_seconds(&self) -> f32 {
         self.frame_time_seconds
+    }
+
+    /// Wall-clock duration of the previous tick.
+    ///
+    /// Phases that run early in a tick cannot judge pressure from elapsed-in-tick, which is still
+    /// near zero for them. This is the usable signal for those.
+    pub(in crate::runtime) fn previous_frame_duration(&self) -> Duration {
+        self.previous_frame_duration
+    }
+
+    /// Wall-clock time spent in the current tick so far.
+    ///
+    /// Derived from the tick-start stamp rather than stored separately, so it cannot drift out of
+    /// sync with [`Self::frame_time_seconds`].
+    pub(in crate::runtime) fn elapsed_in_tick(&self, now: Instant) -> Duration {
+        now.saturating_duration_since(self.started_at)
+            .saturating_sub(Duration::from_secs_f32(self.frame_time_seconds.max(0.0)))
     }
 
     /// Whether asset integration already ran this tick.

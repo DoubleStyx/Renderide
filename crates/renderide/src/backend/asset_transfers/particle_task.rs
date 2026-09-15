@@ -588,21 +588,18 @@ fn integrate_point_result(
             let upload_recorder = MeshUploadRecorder::new(gpu.mesh_upload_batch.as_ref());
             let ctx = particle_mesh_gpu_context(&gpu, &upload_recorder);
             let capacity = u32::try_from(build.asset.count).unwrap_or(u32::MAX);
-            let mesh = match allocate_generated_point_mesh(
+            let Some(mesh) = allocate_generated_point_mesh(
                 ctx,
                 build.mesh_asset_id,
                 capacity,
                 build.bounds,
                 existing.as_ref(),
-            ) {
-                Some(mesh) => mesh,
-                None => {
-                    logger::warn!(
-                        "point render buffer {asset_id}: failed to allocate generated billboard mesh"
-                    );
-                    remove_point_render_buffer(queue, asset_id);
-                    return;
-                }
+            ) else {
+                logger::warn!(
+                    "point render buffer {asset_id}: failed to allocate generated billboard mesh"
+                );
+                remove_point_render_buffer(queue, asset_id);
+                return;
             };
             upload_recorder.flush();
             // GPU-expand the billboard geometry into the freshly allocated mesh buffers. No CPU
@@ -611,6 +608,7 @@ fn integrate_point_result(
                 crate::particles::expand_point_mesh(
                     gpu.device,
                     gpu.queue,
+                    None,
                     targets,
                     &build.asset.points,
                     capacity,
@@ -738,10 +736,10 @@ fn spawn_point_copy_build(
         profiling::scope!("particle::point_task_build_worker");
         let result = catch_unwind(AssertUnwindSafe(|| {
             profiling::scope!("particle::background_payload_decode");
-            let mut guard = shm.lock();
-            let Some(result) = guard.with_read_bytes(&upload.buffer, |raw| {
+            let result = shm.lock().with_read_bytes(&upload.buffer, |raw| {
                 Some(build_point_render_buffer_cpu(raw, &upload))
-            }) else {
+            });
+            let Some(result) = result else {
                 return Err(
                     crate::particles::ParticleRenderBufferError::SharedMemoryReadFailed {
                         kind: "point",
@@ -811,10 +809,10 @@ fn spawn_trail_copy_build(
         profiling::scope!("particle::trail_task_build_worker");
         let result = catch_unwind(AssertUnwindSafe(|| {
             profiling::scope!("particle::background_payload_decode");
-            let mut guard = shm.lock();
-            let Some(result) = guard.with_read_bytes(&upload.buffer, |raw| {
+            let result = shm.lock().with_read_bytes(&upload.buffer, |raw| {
                 Some(build_trail_render_buffer_cpu(raw, &upload))
-            }) else {
+            });
+            let Some(result) = result else {
                 return Err(
                     crate::particles::ParticleRenderBufferError::SharedMemoryReadFailed {
                         kind: "trail",

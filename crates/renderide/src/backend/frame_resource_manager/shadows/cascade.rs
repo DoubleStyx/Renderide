@@ -374,7 +374,7 @@ mod tests {
         // Step near 64/32 = 2, so this whole band shares one cascade size.
         let base = super::quantize_cascade_radius(64.5);
 
-        assert!(base >= 64.5 && base <= 66.0, "base: {base}");
+        assert!((64.5..=66.0).contains(&base), "base: {base}");
         assert_eq!(base, super::quantize_cascade_radius(64.5));
         assert_eq!(base, super::quantize_cascade_radius(65.0));
         assert_eq!(base, super::quantize_cascade_radius(65.9));

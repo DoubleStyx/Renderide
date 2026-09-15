@@ -32,8 +32,6 @@ const MIN_SPACES_FOR_PARALLEL_APPLY: usize = APPLY_PARALLEL_CHUNK_SPACES * 2;
 
 /// Minimum extracted row count before Phase B may fan out across render-space slots.
 pub(super) const MIN_APPLY_PARALLEL_WORK_UNITS: usize = VISIBILITY_CULL_CHUNK_ITEMS * 2;
-/// Dominant-slot ratio numerator for switching to intra-space work splitting.
-const SPACE_SPLIT_DOMINANCE_NUMERATOR: usize = 2;
 
 /// Returns `true` when [`ExtractedRenderSpaceUpdate`] carries no body work for this tick (every
 /// per-update payload is `None`).
@@ -134,27 +132,6 @@ pub(super) fn apply_parallel_admission_with_workers(
 #[inline]
 pub(super) fn apply_work_units(work: &[ApplyWorkSlot]) -> usize {
     work.iter().map(|slot| slot.work_units).sum()
-}
-
-/// Returns the largest estimated work carried by one render-space slot.
-#[inline]
-pub(super) fn dominant_slot_work_units(work: &[ApplyWorkSlot]) -> usize {
-    work.iter().map(|slot| slot.work_units).max().unwrap_or(0)
-}
-
-/// Returns whether a dominant render-space slot should avoid the outer per-space fan-out.
-#[inline]
-pub(super) fn space_split_apply_preferred(
-    slot_count: usize,
-    total_work_units: usize,
-    dominant_work_units: usize,
-    worker_count: usize,
-) -> bool {
-    worker_count > 1
-        && slot_count > 0
-        && slot_count < worker_count
-        && dominant_work_units >= MIN_APPLY_PARALLEL_WORK_UNITS
-        && dominant_work_units.saturating_mul(SPACE_SPLIT_DOMINANCE_NUMERATOR) >= total_work_units
 }
 
 /// Counts extracted camera rows and side slabs.
@@ -349,33 +326,5 @@ mod tests {
             )
             .is_parallel()
         );
-    }
-
-    #[test]
-    fn space_split_apply_prefers_dominant_underfilled_slots() {
-        assert!(space_split_apply_preferred(
-            2,
-            MIN_APPLY_PARALLEL_WORK_UNITS + 64,
-            MIN_APPLY_PARALLEL_WORK_UNITS,
-            8
-        ));
-        assert!(!space_split_apply_preferred(
-            2,
-            MIN_APPLY_PARALLEL_WORK_UNITS * 2,
-            MIN_APPLY_PARALLEL_WORK_UNITS - 1,
-            8
-        ));
-        assert!(!space_split_apply_preferred(
-            8,
-            MIN_APPLY_PARALLEL_WORK_UNITS * 8,
-            MIN_APPLY_PARALLEL_WORK_UNITS * 2,
-            8
-        ));
-        assert!(!space_split_apply_preferred(
-            2,
-            MIN_APPLY_PARALLEL_WORK_UNITS,
-            MIN_APPLY_PARALLEL_WORK_UNITS,
-            1
-        ));
     }
 }

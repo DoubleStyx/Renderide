@@ -106,73 +106,79 @@ impl HiZGpuScratch {
     }
 }
 
-/// Cached Hi-Z encode bind groups whose bindings are stable for the lifetime of a
-/// [`HiZGpuScratch`]. Built lazily on first use so the cache is both cheap to initialise and
-/// self-invalidating: recreating the scratch wipes every slot.
+/// Number of history targets retained by the Hi-Z bind-group cache.
+///
+/// Texture history alternates between exactly two halves. Keeping both avoids rebuilding every
+/// bind group on every frame while still bounding retention if a target is reallocated without a
+/// scratch shape change.
+const HIZ_BIND_GROUP_CACHE_BANKS: usize = 2;
+
+/// Cached Hi-Z encode bind groups whose bindings are stable for one destination target.
+///
+/// Texture history ping-pongs between two allocations, so the cache retains one lazily populated
+/// bank per half. The source depth view is deliberately not part of the bank identity: render-graph
+/// resolution can create a fresh descriptor-equivalent view handle for the same depth texture
+/// every frame. A source-texture change invalidates only mip0, while the seven destination-only
+/// downsample bind groups remain reusable. Recreating [`HiZGpuScratch`] still invalidates every
+/// bank when the extent, mip count, or stereo layout changes.
 pub(crate) struct HiZBindGroupCache {
-    /// `depth_view` last bound into the mip0 slots. Mip0 bindings are rebuilt when this changes
-    /// (e.g. depth target reallocation between frames).
-    mip0_depth_view: Option<wgpu::TextureView>,
-    /// Mip0 view last used as the desktop/left pyramid output.
-    pyramid_left_mip0_view: Option<wgpu::TextureView>,
-    /// Mip0 view last used as the stereo-right pyramid output.
+    banks: Vec<HiZBindGroupCacheBank>,
+    mip_levels: u32,
+    stereo: bool,
+}
+
+/// Bind groups for one exact source-depth / destination-pyramid combination.
+struct HiZBindGroupCacheBank {
+    mip0_depth_texture: wgpu::Texture,
+    pyramid_left_mip0_view: wgpu::TextureView,
     pyramid_right_mip0_view: Option<wgpu::TextureView>,
-    /// Mip0 bind group for desktop (non-stereo) dispatches.
     mip0_desktop: Option<wgpu::BindGroup>,
-    /// Mip0 bind groups for stereo dispatches, indexed by array layer (`[layer0, layer1]`).
     mip0_stereo: [Option<wgpu::BindGroup>; 2],
-    /// Downsample bind groups for the desktop / stereo-left pyramid, one per mip transition.
     downsample_desktop: Vec<Option<wgpu::BindGroup>>,
-    /// Downsample bind groups for the stereo-right pyramid, one per mip transition.
     downsample_right: Vec<Option<wgpu::BindGroup>>,
 }
 
 impl HiZBindGroupCache {
-    /// Creates an empty cache sized for `mip_levels` transitions; allocates a right-eye slot set
-    /// only when `stereo` is true.
+    /// Creates an empty two-target cache sized for `mip_levels` transitions.
     fn with_shape(mip_levels: u32, stereo: bool) -> Self {
-        let n = (mip_levels.saturating_sub(1)) as usize;
         Self {
-            mip0_depth_view: None,
-            pyramid_left_mip0_view: None,
-            pyramid_right_mip0_view: None,
-            mip0_desktop: None,
-            mip0_stereo: [None, None],
-            downsample_desktop: vec![None; n],
-            downsample_right: if stereo { vec![None; n] } else { Vec::new() },
+            banks: Vec::with_capacity(HIZ_BIND_GROUP_CACHE_BANKS),
+            mip_levels,
+            stereo,
         }
     }
 
-    /// Drops the mip0 slots whenever the caller-provided `depth_view` differs from the one used
-    /// to build the cached entries.
-    pub(crate) fn invalidate_mip0_if_depth_changed(&mut self, depth_view: &wgpu::TextureView) {
-        if self.mip0_depth_view.as_ref() != Some(depth_view) {
-            self.mip0_depth_view = Some(depth_view.clone());
-            self.mip0_desktop = None;
-            self.mip0_stereo = [None, None];
-        }
-    }
-
-    /// Drops bind groups that reference the destination pyramid when the ping-pong half changes.
-    pub(crate) fn invalidate_pyramid_if_target_changed(
+    /// Selects the bank for the current ping-pong destination and updates its source depth.
+    ///
+    /// A hit is promoted to the MRU position. A third distinct target replaces only the LRU bank,
+    /// which handles reallocations without retaining stale texture views indefinitely.
+    pub(crate) fn select_target(
         &mut self,
+        depth_texture: &wgpu::Texture,
         left_mip0_view: &wgpu::TextureView,
         right_mip0_view: Option<&wgpu::TextureView>,
     ) {
-        if self.pyramid_left_mip0_view.as_ref() == Some(left_mip0_view)
-            && self.pyramid_right_mip0_view.as_ref() == right_mip0_view
-        {
-            return;
-        }
-        self.pyramid_left_mip0_view = Some(left_mip0_view.clone());
-        self.pyramid_right_mip0_view = right_mip0_view.cloned();
-        self.mip0_desktop = None;
-        self.mip0_stereo = [None, None];
-        for slot in &mut self.downsample_desktop {
-            *slot = None;
-        }
-        for slot in &mut self.downsample_right {
-            *slot = None;
+        let mip_levels = self.mip_levels;
+        let stereo = self.stereo;
+        select_or_insert_mru(
+            &mut self.banks,
+            HIZ_BIND_GROUP_CACHE_BANKS,
+            |bank| bank.matches_pyramid(left_mip0_view, right_mip0_view),
+            || {
+                HiZBindGroupCacheBank::with_target(
+                    mip_levels,
+                    stereo,
+                    depth_texture,
+                    left_mip0_view,
+                    right_mip0_view,
+                )
+            },
+        );
+        // The render graph may recreate the source TextureView handle every frame even while the
+        // underlying depth texture stays stable. Only mip0 samples source depth; downsample passes
+        // read and write the selected history pyramid exclusively.
+        if let Some(bank) = self.banks.first_mut() {
+            bank.select_depth_texture(depth_texture);
         }
     }
 
@@ -181,7 +187,10 @@ impl HiZBindGroupCache {
         &mut self,
         build: F,
     ) -> wgpu::BindGroup {
-        self.mip0_desktop.get_or_insert_with(build).clone()
+        let Some(bank) = self.banks.first_mut() else {
+            return build();
+        };
+        bank.mip0_desktop.get_or_insert_with(build).clone()
     }
 
     /// Returns a clone of the cached mip0 stereo bind group for `layer`, building via `build` on miss.
@@ -191,7 +200,10 @@ impl HiZBindGroupCache {
         build: F,
     ) -> wgpu::BindGroup {
         let idx = (layer as usize).min(1);
-        self.mip0_stereo[idx].get_or_insert_with(build).clone()
+        let Some(bank) = self.banks.first_mut() else {
+            return build();
+        };
+        bank.mip0_stereo[idx].get_or_insert_with(build).clone()
     }
 
     /// Returns a clone of the desktop downsample bind group at `mip`, building via `build` on miss.
@@ -201,9 +213,13 @@ impl HiZBindGroupCache {
         build: F,
     ) -> wgpu::BindGroup {
         let idx = mip as usize;
-        self.downsample_desktop[idx]
-            .get_or_insert_with(build)
-            .clone()
+        let Some(bank) = self.banks.first_mut() else {
+            return build();
+        };
+        let Some(cached) = bank.downsample_desktop.get_mut(idx) else {
+            return build();
+        };
+        cached.get_or_insert_with(build).clone()
     }
 
     /// Returns a clone of the stereo-right downsample bind group at `mip`, building via `build` on miss.
@@ -213,7 +229,100 @@ impl HiZBindGroupCache {
         build: F,
     ) -> wgpu::BindGroup {
         let idx = mip as usize;
-        self.downsample_right[idx].get_or_insert_with(build).clone()
+        let Some(bank) = self.banks.first_mut() else {
+            return build();
+        };
+        let Some(cached) = bank.downsample_right.get_mut(idx) else {
+            return build();
+        };
+        cached.get_or_insert_with(build).clone()
+    }
+}
+
+impl HiZBindGroupCacheBank {
+    fn with_target(
+        mip_levels: u32,
+        stereo: bool,
+        depth_texture: &wgpu::Texture,
+        left_mip0_view: &wgpu::TextureView,
+        right_mip0_view: Option<&wgpu::TextureView>,
+    ) -> Self {
+        let n = (mip_levels.saturating_sub(1)) as usize;
+        Self {
+            mip0_depth_texture: depth_texture.clone(),
+            pyramid_left_mip0_view: left_mip0_view.clone(),
+            pyramid_right_mip0_view: right_mip0_view.cloned(),
+            mip0_desktop: None,
+            mip0_stereo: [None, None],
+            downsample_desktop: vec![None; n],
+            downsample_right: if stereo { vec![None; n] } else { Vec::new() },
+        }
+    }
+
+    fn matches_pyramid(
+        &self,
+        left_mip0_view: &wgpu::TextureView,
+        right_mip0_view: Option<&wgpu::TextureView>,
+    ) -> bool {
+        &self.pyramid_left_mip0_view == left_mip0_view
+            && self.pyramid_right_mip0_view.as_ref() == right_mip0_view
+    }
+
+    /// Invalidates only source-dependent mip0 bindings when the depth allocation changes.
+    fn select_depth_texture(&mut self, depth_texture: &wgpu::Texture) {
+        select_mip0_source_texture(
+            &mut self.mip0_depth_texture,
+            depth_texture.clone(),
+            &mut self.mip0_desktop,
+            &mut self.mip0_stereo,
+        );
+    }
+}
+
+/// Selects the underlying source texture identity and clears only bindings that sample mip0 on a
+/// change. Kept generic so the invalidation contract can be tested without constructing GPU
+/// objects; production instantiates it with [`wgpu::Texture`] and [`wgpu::BindGroup`].
+fn select_mip0_source_texture<Source, Cached>(
+    current_source: &mut Source,
+    next_source: Source,
+    mip0_desktop: &mut Option<Cached>,
+    mip0_stereo: &mut [Option<Cached>; 2],
+) -> bool
+where
+    Source: PartialEq,
+{
+    if current_source == &next_source {
+        return false;
+    }
+    *current_source = next_source;
+    *mip0_desktop = None;
+    *mip0_stereo = [None, None];
+    true
+}
+
+/// Promotes a matching entry to index zero or inserts a fresh MRU entry, evicting the LRU entry
+/// once `capacity` is reached.
+fn select_or_insert_mru<T>(
+    entries: &mut Vec<T>,
+    capacity: usize,
+    mut matches: impl FnMut(&T) -> bool,
+    build: impl FnOnce() -> T,
+) {
+    debug_assert!(capacity > 0);
+    debug_assert!(entries.len() <= capacity);
+    if let Some(index) = entries.iter().position(&mut matches) {
+        entries.swap(0, index);
+        return;
+    }
+
+    let entry = build();
+    if entries.len() < capacity {
+        entries.push(entry);
+        let index = entries.len() - 1;
+        entries.swap(0, index);
+    } else {
+        entries[capacity - 1] = entry;
+        entries.swap(0, capacity - 1);
     }
 }
 
@@ -308,7 +417,86 @@ fn make_staging_ring(
 mod tests {
     use std::mem::size_of;
 
-    use super::{LayerUniform, downsample_uniform_for_mip, layer_uniform_for_layer};
+    use super::{
+        LayerUniform, downsample_uniform_for_mip, layer_uniform_for_layer,
+        select_mip0_source_texture, select_or_insert_mru,
+    };
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct FakeTexture(u32);
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct FakeView {
+        texture: FakeTexture,
+        serial: u32,
+    }
+
+    fn select_value(entries: &mut Vec<u32>, value: u32) {
+        select_or_insert_mru(entries, 2, |entry| *entry == value, || value);
+    }
+
+    #[test]
+    fn bounded_mru_cache_retains_both_ping_pong_targets() {
+        let mut entries = Vec::new();
+
+        select_value(&mut entries, 10);
+        select_value(&mut entries, 20);
+        assert_eq!(entries, [20, 10]);
+
+        select_value(&mut entries, 10);
+        assert_eq!(entries, [10, 20]);
+
+        select_value(&mut entries, 30);
+        assert_eq!(entries, [30, 10]);
+    }
+
+    #[test]
+    fn descriptor_equivalent_view_churn_reuses_mip0_bindings() {
+        let first_view = FakeView {
+            texture: FakeTexture(7),
+            serial: 1,
+        };
+        let next_view = FakeView {
+            texture: FakeTexture(7),
+            serial: 2,
+        };
+        assert_ne!(
+            first_view, next_view,
+            "the graph supplied a fresh view handle"
+        );
+
+        let mut source_texture = first_view.texture;
+        let mut desktop = Some(10);
+        let mut stereo = [Some(20), Some(30)];
+
+        assert!(!select_mip0_source_texture(
+            &mut source_texture,
+            next_view.texture,
+            &mut desktop,
+            &mut stereo,
+        ));
+        assert_eq!(desktop, Some(10));
+        assert_eq!(stereo, [Some(20), Some(30)]);
+    }
+
+    #[test]
+    fn depth_texture_reallocation_invalidates_all_mip0_bindings_only() {
+        let mut source_texture = FakeTexture(7);
+        let mut desktop = Some(10);
+        let mut stereo = [Some(20), Some(30)];
+        let downsample = [Some(40), Some(50)];
+
+        assert!(select_mip0_source_texture(
+            &mut source_texture,
+            FakeTexture(8),
+            &mut desktop,
+            &mut stereo,
+        ));
+        assert_eq!(source_texture, FakeTexture(8));
+        assert_eq!(desktop, None);
+        assert_eq!(stereo, [None, None]);
+        assert_eq!(downsample, [Some(40), Some(50)]);
+    }
 
     #[test]
     fn layer_uniform_payloads_select_expected_layers() {

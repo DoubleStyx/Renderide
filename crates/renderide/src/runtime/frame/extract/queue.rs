@@ -29,6 +29,12 @@ pub(super) struct QueuedViewDraws {
     hi_z_temporal: Option<HiZTemporalState>,
 }
 
+type BuiltViewCullInputs<'a> = (
+    Vec<Option<WorldMeshCullInput<'a>>>,
+    Vec<Option<WorldMeshCullProjParams>>,
+    Vec<Option<HiZTemporalState>>,
+);
+
 impl QueuedViewDraws {
     /// Number of queued draw candidates before final sorting and arrangement.
     pub(super) fn queued_draw_count(&self) -> usize {
@@ -122,17 +128,47 @@ pub(super) fn queue_view_draws(
         && shadow_contexts.len() == 1
         && FrameParallelPolicy::for_current_thread_pool()
             .is_draw_heavy(max_prepared_draw_count.saturating_mul(2));
-    let (world_draws, queued_shadow_casters) = if overlap_world_and_shadows {
-        profiling::scope!("render::queue_view_draws::world_shadow_join");
-        rayon::join(
-            || queue_prepared_draws_for_views_with_parallelism(&contexts, inner_parallelism),
-            || queue_prepared_draws_for_views_with_parallelism(&shadow_contexts, inner_parallelism),
-        )
-    } else {
-        (
+    // Shadow casters are never camera-frustum-culled, so their collection only changes when the
+    // scene's STATIC content or an LOD selection does. When both are unchanged the collection is
+    // skipped entirely and last frame's arranged plans are substituted after sorting. -xlinka
+    let shadow_content_version = shadow_collection_static_version(setup, prepared);
+    let resolved_shadows = match shadow_content_version {
+        Some(version) if !shadow_contexts.is_empty() => {
+            let cache = setup.draw_plan_cache;
+            crate::world_mesh::draw_prep::queue_prepared_draws_for_views_with_reuse(
+                &shadow_contexts,
+                inner_parallelism,
+                version,
+                |fingerprint| cache.admit_shadow_collection(fingerprint),
+            )
+            .or(Some(Vec::new()))
+        }
+        _ => {
+            setup.draw_plan_cache.skip_shadow_collection_reuse();
+            None
+        }
+    };
+    let (world_draws, queued_shadow_casters) = match resolved_shadows {
+        Some(shadows) => (
+            queue_prepared_draws_for_views_with_parallelism(&contexts, inner_parallelism),
+            shadows,
+        ),
+        None if overlap_world_and_shadows => {
+            profiling::scope!("render::queue_view_draws::world_shadow_join");
+            rayon::join(
+                || queue_prepared_draws_for_views_with_parallelism(&contexts, inner_parallelism),
+                || {
+                    queue_prepared_draws_for_views_with_parallelism(
+                        &shadow_contexts,
+                        inner_parallelism,
+                    )
+                },
+            )
+        }
+        None => (
             queue_prepared_draws_for_views_with_parallelism(&contexts, inner_parallelism),
             queue_prepared_draws_for_views_with_parallelism(&shadow_contexts, inner_parallelism),
-        )
+        ),
     };
     let mut queued_shadow_casters = queued_shadow_casters.into_iter();
     let shadow_caster_draws = prepared
@@ -147,7 +183,8 @@ pub(super) fn queue_view_draws(
             }
         })
         .collect::<Vec<_>>();
-    debug_assert!(queued_shadow_casters.next().is_none());
+    let all_shadow_casters_consumed = queued_shadow_casters.next().is_none();
+    debug_assert!(all_shadow_casters_consumed);
     let mut view_draws: Vec<QueuedViewDraws> = world_draws
         .into_iter()
         .zip(shadow_caster_draws)
@@ -262,6 +299,8 @@ fn visible_view_inputs<'a>(
         view_origin_world: prep.view_origin_world(),
         culling,
         retain_gpu_static_candidates: setup.retain_gpu_static_candidates,
+        shadow_caster_only: false,
+        needs_world_bounds: false,
         lod_selection_culling: None,
         mesh_lod_bias,
         transform_filter: prep.draw_filter.as_ref(),
@@ -287,11 +326,7 @@ fn max_prepared_draw_count_for_views(
 fn build_view_cull_inputs<'a>(
     prepared: &'a [FrameViewPlan<'_>],
     cull_snapshots: Vec<Option<ViewCullSnapshot>>,
-) -> (
-    Vec<Option<WorldMeshCullInput<'a>>>,
-    Vec<Option<WorldMeshCullProjParams>>,
-    Vec<Option<HiZTemporalState>>,
-) {
+) -> BuiltViewCullInputs<'a> {
     profiling::scope!("render::queue_view_draws::build_cull_inputs");
     let mut cull_inputs = Vec::with_capacity(prepared.len());
     let mut cull_projs = Vec::with_capacity(prepared.len());
@@ -367,6 +402,8 @@ pub(super) fn desktop_overlay_view_inputs<'a>(
         view_origin_world: prep.view_origin_world(),
         culling: None,
         retain_gpu_static_candidates: false,
+        shadow_caster_only: false,
+        needs_world_bounds: false,
         lod_selection_culling: None,
         mesh_lod_bias,
         transform_filter: None,
@@ -375,6 +412,28 @@ pub(super) fn desktop_overlay_view_inputs<'a>(
         layer_policy: ViewLayerPolicy::DesktopOverlay,
         reflection_probes: None,
     }
+}
+
+/// Folds every shadow view's STATIC render-world dependencies into one content version.
+///
+/// Uses the gpu-static dependency set deliberately: it carries the render world's cache identity
+/// and `static_generation`, which excludes particle churn. `prepared_generation` moves every frame
+/// in a particle world and would make any cache keyed on it permanently miss. -xlinka
+fn shadow_collection_static_version(
+    setup: &ExtractedFrameShared<'_>,
+    prepared: &[FrameViewPlan<'_>],
+) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = ahash::AHasher::default();
+    for prep in prepared.iter().filter(|prep| prep.render_shadows) {
+        let shader_perm = prep.shader_permutation();
+        setup
+            .gpu_static_draw_dependencies_for(prep.render_context(), shader_perm)?
+            .hash(&mut hasher);
+        (prep.render_context() as u8).hash(&mut hasher);
+        shader_perm.hash(&mut hasher);
+    }
+    Some(hasher.finish())
 }
 
 /// Builds shadow-caster draw-collection inputs for a view without camera visibility culling.
@@ -389,6 +448,10 @@ pub(super) fn shadow_caster_view_inputs<'a>(
         view_origin_world: prep.view_origin_world(),
         culling: None,
         retain_gpu_static_candidates: false,
+        shadow_caster_only: true,
+        // Casters are never camera-frustum-culled, but each shadow view still tests them against
+        // its own cascade volume, and that test needs real bounds to be anything but a no-op.
+        needs_world_bounds: true,
         lod_selection_culling,
         mesh_lod_bias,
         transform_filter: prep.draw_filter.as_ref(),
@@ -545,6 +608,9 @@ mod tests {
         assert!(visible_view_inputs(&shared, &prepared[0], None, 1.0).retain_gpu_static_candidates);
         assert!(!desktop_overlay_view_inputs(&prepared[0], 1.0).retain_gpu_static_candidates);
         assert!(!shadow_caster_view_inputs(&prepared[0], None, 1.0).retain_gpu_static_candidates);
+        assert!(!visible_view_inputs(&shared, &prepared[0], None, 1.0).shadow_caster_only);
+        assert!(!desktop_overlay_view_inputs(&prepared[0], 1.0).shadow_caster_only);
+        assert!(shadow_caster_view_inputs(&prepared[0], None, 1.0).shadow_caster_only);
     }
 
     #[test]

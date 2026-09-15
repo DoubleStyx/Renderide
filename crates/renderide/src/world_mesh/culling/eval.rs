@@ -72,6 +72,20 @@ where
     cpu_cull_frustum_visible(&culling.proj, is_overlay, view, wmin, wmax)
 }
 
+/// Frustum test for a non-overlay world AABB against an already-resolved world-to-view matrix.
+///
+/// Resolving the space and rebuilding the view matrix per AABB dominated spatial queries: the BVH
+/// traversal calls this once per node and once per surviving run, so a 37k-run space paid tens of
+/// thousands of redundant lookups for a value that is constant across the query. -xlinka
+pub(crate) fn world_aabb_visible_for_cull_with_view(
+    culling: &WorldMeshCullInput<'_>,
+    view: Mat4,
+    wmin: Vec3,
+    wmax: Vec3,
+) -> bool {
+    cpu_cull_frustum_visible(&culling.proj, false, view, wmin, wmax)
+}
+
 /// Returns `true` when the draw should be **culled** by Hi-Z (fully occluded).
 fn cpu_cull_hi_z_should_cull(
     space_id: RenderSpaceId,
@@ -184,6 +198,27 @@ where
     if !world_aabb_visible_for_cull(scene, space_id, is_overlay, culling, wmin, wmax) {
         return Err(CpuCullFailure::Frustum);
     }
+    if cpu_cull_hi_z_should_cull(space_id, wmin, wmax, culling) {
+        return Err(CpuCullFailure::HiZ);
+    }
+    Ok(geom.rigid_world_matrix)
+}
+
+/// Finishes CPU culling after the prepared spatial index already accepted this exact world AABB.
+///
+/// This is intentionally limited to non-overlay prepared runs with finite, non-degenerate bounds:
+/// [`crate::world_mesh::draw_prep::prepared_renderables::spatial`] has already applied the same
+/// [`world_aabb_visible_for_cull`] test to those runs. Repeating it here used to perform another
+/// render-space lookup, view-matrix resolve, matrix multiply, and eight-corner clip test for every
+/// surviving renderer. Hi-Z remains per-run and is still evaluated here.
+pub(crate) fn mesh_cpu_cull_after_spatial_frustum_with_geometry(
+    geom: MeshCullGeometry,
+    space_id: RenderSpaceId,
+    culling: &WorldMeshCullInput<'_>,
+) -> Result<Option<Mat4>, CpuCullFailure> {
+    let Some((wmin, wmax)) = geom.world_aabb else {
+        return Ok(geom.rigid_world_matrix);
+    };
     if cpu_cull_hi_z_should_cull(space_id, wmin, wmax, culling) {
         return Err(CpuCullFailure::HiZ);
     }

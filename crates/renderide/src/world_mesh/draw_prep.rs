@@ -25,6 +25,7 @@ mod render_world;
 mod sort;
 
 pub(crate) use collect::queue_prepared_draws_for_views_with_parallelism;
+pub(crate) use collect::queue_prepared_draws_for_views_with_reuse;
 pub use collect::{
     DrawCollectionFrameCaches, DrawCollectionInputs, DrawCollectionMaterialInputs,
     DrawCollectionSceneAssets, DrawCollectionViewInputs, QueuedWorldMeshDraws, ViewLayerPolicy,
@@ -35,7 +36,7 @@ pub use command_cache::WorldMeshCommandCacheStats;
 pub(crate) use command_cache::{WorldMeshCommandCache, fingerprint_world_mesh_draws};
 pub use filter::{CameraTransformDrawFilter, draw_filter_from_camera_entry};
 pub use item::{
-    WorldMeshDrawArrangementStats, WorldMeshDrawCollection, WorldMeshDrawItem,
+    WorldMeshDrawArrangementStats, WorldMeshDrawCollection, WorldMeshDrawItem, WorldMeshDrawList,
     WorldMeshVisibilityStats,
 };
 pub use prepared_renderables::FramePreparedRenderables;

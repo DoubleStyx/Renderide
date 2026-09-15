@@ -12,7 +12,7 @@ use crate::camera::HostCameraFrame;
 use crate::frame_contract::FrameViewClear;
 use crate::frame_upload_batch::FrameUploadBatch;
 use crate::gpu::GpuRetainedResources;
-use crate::graph_inputs::PerViewHudOutputsSlot;
+use crate::graph_inputs::{PerViewHudOutputsSlot, PerViewSubmitRetainedResourcesSlot};
 use crate::render_graph::blackboard::{Blackboard, GraphCommandStatsSlot};
 use crate::render_graph::context::GraphResolvedResources;
 use crate::render_graph::error::GraphExecuteError;
@@ -224,9 +224,11 @@ impl CompiledRenderGraph {
         let encode_ms = encoded.encode_ms.max(elapsed_ms(encode_start));
         let mut retained_resources = GpuRetainedResources::new();
         resolved_resources.retain_submit_resources(&mut retained_resources);
-        retained_resources.append(crate::passes::take_gpu_cull_submit_resources(
-            &mut view_blackboard,
-        ));
+        retained_resources.append(
+            view_blackboard
+                .take::<PerViewSubmitRetainedResourcesSlot>()
+                .unwrap_or_default(),
+        );
         self.recycle_view_blackboard(view_id, view_blackboard);
         Ok(PerViewEncodeOutput {
             command_buffers: encoded.command_buffers,
@@ -304,9 +306,11 @@ impl CompiledRenderGraph {
         let hud_outputs = view_blackboard.take::<PerViewHudOutputsSlot>();
         let mut retained_resources = GpuRetainedResources::new();
         resolved_resources.retain_submit_resources(&mut retained_resources);
-        retained_resources.append(crate::passes::take_gpu_cull_submit_resources(
-            &mut view_blackboard,
-        ));
+        retained_resources.append(
+            view_blackboard
+                .take::<PerViewSubmitRetainedResourcesSlot>()
+                .unwrap_or_default(),
+        );
         self.recycle_view_blackboard(view_id, view_blackboard);
         Ok(PerViewEncodeOutput {
             command_buffers: Vec::new(),
@@ -715,7 +719,6 @@ impl CompiledRenderGraph {
             unit,
             Some(&mut begin_query),
         );
-        drop(begin_query);
         let recorded_gpu_query = query.is_some();
         if let (Some(profiler), Some(query)) = (profiler, query) {
             profiler.end_query(targets.encoder, query);

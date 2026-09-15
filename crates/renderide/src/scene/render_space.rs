@@ -189,6 +189,13 @@ pub(in crate::scene) struct RenderSpaceState {
     pub(in crate::scene) next_mesh_renderer_instance_id: MeshRendererInstanceId,
     /// Host LOD-group renderables; dense by host `renderable_index`.
     pub(in crate::scene) lod_groups: Vec<LodGroupEntry>,
+    /// Bumped whenever [`Self::lod_groups`] membership is mutated.
+    ///
+    /// The renderer used to re-hash every group's every renderer on each refit to detect a change
+    /// it was never told about, which measured 0.705 ms/frame in Darkcity11. Announcing the change
+    /// at the mutation is the same push-vs-pull shift that keeps a modern engine from scanning the
+    /// scene: consumers compare one integer instead of walking the world. -xlinka
+    pub(in crate::scene) lod_generation: u64,
     /// Host camera components (secondary cameras, render texture targets).
     pub(in crate::scene) cameras: Vec<CameraRenderableEntry>,
     /// Host camera portal components.
@@ -289,6 +296,7 @@ impl Default for RenderSpaceState {
             skinned_mesh_renderers: Vec::new(),
             next_mesh_renderer_instance_id: MeshRendererInstanceId(1),
             lod_groups: Vec::new(),
+            lod_generation: 0,
             cameras: Vec::new(),
             camera_portals: Vec::new(),
             reflection_probes: Vec::new(),

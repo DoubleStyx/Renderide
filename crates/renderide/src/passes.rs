@@ -40,5 +40,5 @@ pub(crate) use world_mesh_forward::{
     WorldMeshOverlayForwardPlanSlot, collect_shadow_indirect_layer,
     depth_prepass_pipeline_key_for_draw, draw_shadow_depth_subset, issue_shadow_indirect_runs,
     normal_pipeline_key_for_draw, pre_warm_depth_prepass_pipeline, pre_warm_normal_pipeline,
-    prepare_world_mesh_forward_frame, take_gpu_cull_submit_resources,
+    prepare_world_mesh_forward_frame,
 };

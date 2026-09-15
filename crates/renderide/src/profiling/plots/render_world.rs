@@ -82,6 +82,8 @@ pub struct RenderWorldMaintenanceProfileSample {
     pub context_overlay_clone_count: usize,
     /// Condition that forced the clone; 0 means none was needed.
     pub context_overlay_clone_reason: usize,
+    /// Overlay frames that re-expanded only override targets instead of cloning the whole snapshot.
+    pub context_overlay_override_replay_count: usize,
     /// Exact override renderer ranges patched into context overlays.
     pub context_override_patch_count: usize,
     /// Frames where this render world proved its retained snapshot did not need rebuilding.
@@ -89,6 +91,10 @@ pub struct RenderWorldMaintenanceProfileSample {
 }
 
 /// Records retained render-world dirty, rebuild, and spatial maintenance counters.
+#[expect(
+    clippy::too_many_lines,
+    reason = "flat telemetry emission keeps plot names beside their source fields"
+)]
 pub fn plot_render_world_maintenance(sample: &RenderWorldMaintenanceProfileSample) {
     tracy_plot!(
         "render_world::topology_dirty",
@@ -237,6 +243,10 @@ pub fn plot_render_world_maintenance(sample: &RenderWorldMaintenanceProfileSampl
     tracy_plot!(
         "render_world::context_overlay_clone_reason",
         sample.context_overlay_clone_reason as f64
+    );
+    tracy_plot!(
+        "render_world::context_overlay_override_replay",
+        sample.context_overlay_override_replay_count as f64
     );
     tracy_plot!(
         "render_world::context_override_patches",

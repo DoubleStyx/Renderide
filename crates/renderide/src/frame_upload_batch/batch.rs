@@ -111,6 +111,7 @@ impl FrameUploadBatch {
         let mut recorded = self.recorded.lock();
         recorded.writes.clear();
         recorded.bytes.clear();
+        drop(recorded);
         self.fallback_sequence.store(0, Ordering::Relaxed);
     }
 

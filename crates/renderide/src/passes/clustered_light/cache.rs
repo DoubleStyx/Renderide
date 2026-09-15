@@ -11,6 +11,8 @@ use parking_lot::Mutex;
 
 use crate::camera::ViewId;
 
+type ClusteredLightCacheEntries = HashMap<ViewId, ((u64, u64), Arc<wgpu::BindGroup>)>;
+
 /// Interior-mutable per-view bind group cache for the clustered light compute pass.
 ///
 /// Wraps a [`Mutex`] around a map of `(cluster_version, BindGroup)` pairs so that
@@ -19,9 +21,7 @@ use crate::camera::ViewId;
 ///
 /// Uses [`parking_lot::Mutex`] to keep the `lock` API infallible -- the hot per-view
 /// recording path must not defensively `.expect()` on every access.
-pub(super) struct ClusteredLightBindGroupCache(
-    Mutex<HashMap<ViewId, ((u64, u64), Arc<wgpu::BindGroup>)>>,
-);
+pub(super) struct ClusteredLightBindGroupCache(Mutex<ClusteredLightCacheEntries>);
 
 impl std::fmt::Debug for ClusteredLightBindGroupCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -75,7 +75,7 @@ impl ClusteredLightBindGroupCache {
 /// Extracted for unit testing without a GPU device.
 #[cfg(test)]
 fn needs_rebuild_for_version(
-    cache: &HashMap<ViewId, ((u64, u64), Arc<wgpu::BindGroup>)>,
+    cache: &ClusteredLightCacheEntries,
     view_id: ViewId,
     cluster_ver: (u64, u64),
 ) -> bool {

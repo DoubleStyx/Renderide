@@ -12,29 +12,37 @@ use crate::gpu::{
     GpuLimits, GpuShadowView, MAX_SHADOW_VIEWS, SHADOW_VIEW_KIND_DIRECTIONAL,
     SHADOW_VIEW_KIND_POINT, SHADOW_VIEW_KIND_SPOT,
 };
-use crate::materials::shadow_caster_policy_for_pipeline;
 use crate::mesh_deform::SkinCacheKey;
 use crate::render_phase::RenderPhaseSet;
 use crate::shared::{LightType, ShadowCastMode};
 use crate::world_mesh::culling::frustum::world_aabb_visible_in_homogeneous_clip;
 use crate::world_mesh::draw_prep::WorldMeshDrawCollection;
 use crate::world_mesh::{
-    DrawGroup, InstancePlan, WorldMeshDrawItem, WorldMeshDrawPlan, WorldMeshPhase,
+    DrawGroup, InstancePlan, WorldMeshDrawItem, WorldMeshDrawList, WorldMeshDrawPlan,
+    WorldMeshPhase,
 };
 
 use super::super::shadow_atlas_format::select_shadow_atlas_format;
 use super::manager::FrameResourceManager;
 
 mod cascade;
+mod caster_filter;
 mod layer_cache;
 mod point_faces;
 
 pub(crate) use cascade::ShadowCameraFit;
+use caster_filter::filter_shadow_caster_draws;
 pub(in crate::backend::frame_resource_manager) use layer_cache::ShadowLayerCache;
 use layer_cache::{ShadowLayerLease, ShadowVisibilityLease};
 
 const POINT_FACE_COUNT: u32 = point_faces::POINT_FACE_COUNT;
 const SHADOW_TYPE_NONE: u32 = 0;
+/// Most visible sub-ranges one instance group may be split into before the split stops paying.
+///
+/// Each sub-range is an extra draw call. Fully visible and fully hidden groups both produce one
+/// run or none, so this only bites on genuinely scattered visibility, where the whole group is
+/// cheaper than the fragments.
+const SHADOW_SUBRANGE_RUN_LIMIT: usize = 32;
 static SHADOW_ATLAS_UNSUPPORTED_WARNING: Once = Once::new();
 
 /// Bitwise shadow-view signature stored without hash-collision risk.
@@ -89,15 +97,24 @@ pub(crate) struct ShadowPlanningCacheStats {
     pub(crate) content_hash_hits: usize,
     /// Visible-member rows not rehashed on content-cache hits.
     pub(crate) avoided_content_hash_draws: usize,
+    /// Held cascade projections reused instead of refitted to the camera.
+    pub(crate) cascade_hold_hits: usize,
+    /// Held cascades refitted because the pin aged past its cadence (or was never pinned).
+    ///
+    /// Only counted for cascades with a cadence above one. Cascade 0 hugs the camera and is
+    /// refitted unconditionally, so it is not a hold candidate and is not counted here.
+    pub(crate) cascade_hold_age_misses: usize,
+    /// Held cascades refitted because the pinned sphere stopped covering the wanted slice.
+    pub(crate) cascade_hold_coverage_misses: usize,
 }
 
 /// Shared shadow-caster draw packet for one source render view.
 #[derive(Clone, Debug)]
 pub(crate) struct ShadowCasterSet {
     /// Strong source identity used by geometry-arena and shadow caches.
-    pub(crate) source_draws: Arc<[WorldMeshDrawItem]>,
+    pub(crate) source_draws: WorldMeshDrawList,
     /// Shadow-casting world-mesh draws shared by all shadow views for the source view.
-    pub(crate) draws: Arc<[WorldMeshDrawItem]>,
+    pub(crate) draws: WorldMeshDrawList,
     /// Instance grouping shared by every shadow map that renders [`Self::draws`].
     pub(crate) instance_plan: InstancePlan,
     /// First per-draw slab row reserved for this caster set.
@@ -201,6 +218,8 @@ pub(crate) struct ShadowRenderView {
     /// Signature over the visible caster members, computed only when [`Self::params_sig`]
     /// matched the cached layer and the members allow reuse.
     pub(crate) caster_sig: Option<u64>,
+    /// Why this layer records in full, if it does. See `SHADOW_FULL_REASON_*`.
+    pub(crate) full_redraw_reason: u8,
 }
 
 impl ShadowRenderView {
@@ -266,6 +285,7 @@ impl ShadowRenderView {
             cache_key: 0,
             params_sig: 0,
             caster_sig: None,
+            full_redraw_reason: SHADOW_FULL_REASON_NONE,
         }
     }
 }
@@ -449,7 +469,14 @@ impl FrameResourceManager {
         }
         let plan = &mut self.shadow_frame;
         for view in &mut plan.render_views {
-            let params_sig = shadow_layer_params_signature(&self.shadow_layer_cache, view);
+            // Commit the signature planning compared against, NOT a fresh one. `apply_shadow_atlas_
+            // resolution` above clamps `view.resolution` to the atlas that actually got allocated,
+            // and resolution is part of the params signature. Re-signing here stored a value the
+            // next frame's planner could never reproduce (it signs the light's requested
+            // resolution, before any clamp), so every clamped layer mismatched forever and redrew
+            // in full for the life of the session. A genuine atlas reshape is already covered by
+            // `atlas_changed` invalidating every layer. -xlinka
+            let params_sig = view.params_sig;
             if atlas_changed
                 || (!view.render_scope.records()
                     && !self.shadow_layer_cache.rendered_contents_match(
@@ -558,6 +585,9 @@ fn plot_shadow_planning_cache(stats: ShadowPlanningCacheStats) {
         avoided_visibility_group_tests: stats.avoided_visibility_group_tests,
         avoided_visibility_draw_tests: stats.avoided_visibility_draw_tests,
         avoided_content_hash_draws: stats.avoided_content_hash_draws,
+        cascade_hold_hits: stats.cascade_hold_hits,
+        cascade_hold_age_misses: stats.cascade_hold_age_misses,
+        cascade_hold_coverage_misses: stats.cascade_hold_coverage_misses,
         ..crate::profiling::ShadowCacheProfileSample::default()
     });
 }
@@ -585,6 +615,7 @@ fn append_shadow_views_for_view(
     max_shadow_views: usize,
     previous_caster_sets: &mut Vec<ShadowCasterSet>,
 ) {
+    profiling::scope!("render::prepare_shadow_frame::append_views");
     let Some(collection) = view.draw_plan.as_prefetched() else {
         return;
     };
@@ -711,15 +742,7 @@ fn append_shadow_caster_set(
     }
 
     manager.shadow_layer_cache.note_caster_plan_miss();
-    let shadow_draws = collection
-        .items
-        .iter()
-        .filter(|item| {
-            item.shadow_cast_mode != ShadowCastMode::Off
-                && shadow_caster_policy_for_pipeline(&item.batch_key.pipeline).casts()
-        })
-        .cloned()
-        .collect::<Arc<[WorldMeshDrawItem]>>();
+    let shadow_draws = filter_shadow_caster_draws(&collection.items);
     if shadow_draws.is_empty() {
         return None;
     }
@@ -840,6 +863,7 @@ fn plan_shadow_render_view(
     ctx: &ShadowViewPlanContext,
     view_offset: u32,
 ) {
+    profiling::scope!("render::prepare_shadow_frame::plan_layer");
     let cache_key = shadow_layer_cache_key(cache, ctx.view_id, light, view_offset);
     let view_proj = shadow_projection_for_light(
         ShadowProjectionRequest {
@@ -861,20 +885,14 @@ fn plan_shadow_render_view(
         ctx.light_range,
         ctx.shadow_bias,
     );
-    let ShadowLayerLease {
-        layer,
-        rendered_params_sig,
-        rendered_caster_sig,
-        static_store_params_sig,
-        static_store_caster_sig,
-    } = cache.acquire(cache_key);
+    let lease = cache.acquire(cache_key);
     let caster_set = &plan.caster_sets[ctx.caster_set_index];
     let visibility = cache
-        .cached_visibility(cache_key, &caster_set.source_draws, view_signature)
+        .cached_visibility(lease.key, &caster_set.source_draws, view_signature)
         .unwrap_or_else(|| {
             let built = visible_shadow_groups_for_view(view_proj, caster_set);
             cache.store_visibility(
-                cache_key,
+                lease.key,
                 Arc::clone(&caster_set.source_draws),
                 view_signature,
                 &built.lease,
@@ -884,7 +902,7 @@ fn plan_shadow_render_view(
             built.lease
         });
     let mut render_view = ShadowRenderView {
-        layer,
+        layer: lease.layer,
         kind: ctx.kind,
         resolution: ctx.resolution,
         view_proj,
@@ -898,19 +916,48 @@ fn plan_shadow_render_view(
         view_signature,
         render_scope: ShadowRenderScope::Full,
         static_caster_sig: None,
-        cache_key,
+        cache_key: lease.key,
         params_sig: 0,
         caster_sig: None,
+        full_redraw_reason: SHADOW_FULL_REASON_NONE,
     };
-    render_view.params_sig = shadow_layer_params_signature(cache, &render_view);
-    // Worth scanning the casters only if some retained depth was rendered under these exact light
-    // parameters. A moved projection invalidates the live layer and the static store alike.
+    apply_shadow_reuse_decision(cache, caster_set, &mut render_view, lease);
+    plan.metadata.push(gpu_shadow_view_for_light(
+        light,
+        view_proj,
+        render_view.layer,
+        ctx.resolution,
+        view_offset,
+    ));
+    plan.render_views.push(render_view);
+}
+
+/// Applies retained live/static depth signatures to one fully described shadow view.
+fn apply_shadow_reuse_decision(
+    cache: &mut ShadowLayerCache,
+    caster_set: &ShadowCasterSet,
+    render_view: &mut ShadowRenderView,
+    lease: ShadowLayerLease,
+) {
+    let ShadowLayerLease {
+        rendered_params_sig,
+        rendered_caster_sig,
+        static_store_params_sig,
+        static_store_caster_sig,
+        ..
+    } = lease;
+    render_view.params_sig = shadow_layer_params_signature(cache, render_view);
+    let cache_key = render_view.cache_key;
+    let view_signature = render_view.view_signature;
+    // Scan casters only when retained depth was rendered under these exact light parameters.
     let params_match_live = rendered_params_sig == Some(render_view.params_sig);
     let params_match_store = static_store_params_sig == Some(render_view.params_sig);
-    if params_match_live || params_match_store {
+    let scanned_content = (params_match_live || params_match_store).then(|| {
         let retained = ShadowRetainedDepth {
             live_caster_sig: params_match_live.then_some(rendered_caster_sig).flatten(),
-            store_caster_sig: params_match_store.then_some(static_store_caster_sig).flatten(),
+            store_caster_sig: params_match_store
+                .then_some(static_store_caster_sig)
+                .flatten(),
             store_available: cache.static_store_available(),
         };
         let content = cache
@@ -930,19 +977,50 @@ fn plan_shadow_render_view(
                 content
             });
         render_view.render_scope = shadow_render_scope(content, retained);
-        // A layer that draws dynamic casters never holds reusable live contents, so it reports no
-        // live signature. Its reuse comes from the static store instead.
+        // Dynamic casters prevent reusable live contents; reuse comes from the static store.
         render_view.caster_sig = (content.reusable && !content.has_dynamic).then_some(content.hash);
         render_view.static_caster_sig = content.reusable.then_some(content.hash);
+        content
+    });
+    render_view.full_redraw_reason = shadow_full_redraw_reason(
+        render_view.render_scope,
+        params_match_live || params_match_store,
+        scanned_content,
+    );
+}
+
+/// Layer was reused or partially re-recorded; nothing to explain.
+pub(crate) const SHADOW_FULL_REASON_NONE: u8 = 0;
+/// Light parameters (projection, resolution, bias) moved, so no retained depth applies.
+pub(crate) const SHADOW_FULL_REASON_PARAMS_CHANGED: u8 = 1;
+/// Caster members could not produce a reusable signature (mesh mutated or dynamic in the scan).
+pub(crate) const SHADOW_FULL_REASON_NOT_REUSABLE: u8 = 2;
+/// Static-only layer whose caster content hash no longer matches the retained depth.
+pub(crate) const SHADOW_FULL_REASON_CONTENT_CHANGED: u8 = 3;
+/// Layer holds dynamic casters but no static depth store exists to draw them over.
+pub(crate) const SHADOW_FULL_REASON_NO_STATIC_STORE: u8 = 4;
+
+/// Classifies why a layer ended up recording in full, so a capture names the cause instead of
+/// leaving it to inference. Mirrors the overlay clone-reason counter. -xlinka
+fn shadow_full_redraw_reason(
+    scope: ShadowRenderScope,
+    params_matched: bool,
+    content: Option<ShadowCasterContentHash>,
+) -> u8 {
+    if !matches!(scope, ShadowRenderScope::Full) {
+        return SHADOW_FULL_REASON_NONE;
     }
-    plan.metadata.push(gpu_shadow_view_for_light(
-        light,
-        view_proj,
-        layer,
-        ctx.resolution,
-        view_offset,
-    ));
-    plan.render_views.push(render_view);
+    let Some(content) = content.filter(|_| params_matched) else {
+        return SHADOW_FULL_REASON_PARAMS_CHANGED;
+    };
+    if !content.reusable {
+        return SHADOW_FULL_REASON_NOT_REUSABLE;
+    }
+    if content.has_dynamic {
+        SHADOW_FULL_REASON_NO_STATIC_STORE
+    } else {
+        SHADOW_FULL_REASON_CONTENT_CHANGED
+    }
 }
 
 /// Retained depth already available to a layer under its current light parameters.
@@ -1173,16 +1251,32 @@ fn visible_shadow_groups_for_view(
     let mut visible_group_count = 0usize;
     let mut visible_group_draw_count = 0usize;
     let mut candidate_group_count = 0usize;
+    let mut runs: Vec<std::ops::Range<u32>> = Vec::new();
     for phase in WorldMeshPhase::PRIMARY_FORWARD {
         for group in caster_set.instance_plan.phase(phase) {
             candidate_group_count = candidate_group_count.saturating_add(1);
-            if shadow_group_visible_to_view(view_proj, caster_set, group) {
+            visible_shadow_subranges(view_proj, caster_set, group, &mut runs);
+            let items = visible.phase_mut(phase);
+            for run in &runs {
                 visible_group_count = visible_group_count.saturating_add(1);
-                visible_group_draw_count = visible_group_draw_count.saturating_add(
-                    (group.instance_range.end - group.instance_range.start) as usize,
-                );
-                visible.phase_mut(phase).push(group.clone());
+                visible_group_draw_count =
+                    visible_group_draw_count.saturating_add((run.end - run.start) as usize);
+                // Slab order puts the group's own representative first, so a sub-range that starts
+                // later needs the member actually at its head. Every member shares the group key,
+                // so this only ever changes which equivalent draw backs the pipeline/mesh lookup.
+                let representative_draw_idx = caster_set
+                    .instance_plan
+                    .slab_layout
+                    .get(run.start as usize)
+                    .copied()
+                    .unwrap_or(group.representative_draw_idx);
+                items.push(DrawGroup {
+                    representative_draw_idx,
+                    instance_range: run.clone(),
+                    material_packet_idx: group.material_packet_idx,
+                });
             }
+            runs.clear();
         }
     }
     VisibleShadowGroupsBuild {
@@ -1196,22 +1290,51 @@ fn visible_shadow_groups_for_view(
     }
 }
 
-fn shadow_group_visible_to_view(
+/// Fills `runs` with the visible instance sub-ranges of `group`, in slab order.
+///
+/// The whole point: an instance group is one draw call covering every copy of one mesh, so testing
+/// it as a unit means one visible copy drags in all of them. A world with 65k instances of the same
+/// triangle collapses to a handful of groups, and the group test then keeps all 65k in every
+/// cascade no matter where the camera looks. Splitting into visible sub-ranges makes the cull scale
+/// with what the cascade actually contains instead of with total scene size. -xlinka
+///
+/// Falls back to the whole group once visibility is too scattered to split: drawing a caster the
+/// cascade cannot see is only slow, never wrong, while thousands of one-instance draw calls are
+/// worse than the instances they skip.
+fn visible_shadow_subranges(
     view_proj: Mat4,
     caster_set: &ShadowCasterSet,
     group: &DrawGroup,
-) -> bool {
+    runs: &mut Vec<std::ops::Range<u32>>,
+) {
+    runs.clear();
     let start = group.instance_range.start as usize;
     let end = group.instance_range.end as usize;
     let Some(members) = caster_set.instance_plan.slab_layout.get(start..end) else {
-        return true;
+        runs.push(group.instance_range.clone());
+        return;
     };
-    members.iter().any(|&draw_idx| {
-        caster_set
+    for (offset, &draw_idx) in members.iter().enumerate() {
+        let visible = caster_set
             .draws
             .get(draw_idx)
-            .is_none_or(|draw| shadow_draw_visible_to_view(view_proj, draw))
-    })
+            .is_none_or(|draw| shadow_draw_visible_to_view(view_proj, draw));
+        if !visible {
+            continue;
+        }
+        let slot = group.instance_range.start.saturating_add(offset as u32);
+        match runs.last_mut() {
+            Some(run) if run.end == slot => run.end = slot.saturating_add(1),
+            _ => {
+                if runs.len() >= SHADOW_SUBRANGE_RUN_LIMIT {
+                    runs.clear();
+                    runs.push(group.instance_range.clone());
+                    return;
+                }
+                runs.push(slot..slot.saturating_add(1));
+            }
+        }
+    }
 }
 
 fn shadow_draw_visible_to_view(view_proj: Mat4, draw: &WorldMeshDrawItem) -> bool {
@@ -1295,7 +1418,9 @@ fn shadow_light_priority_order(
 
 /// Approximate on-screen significance of a punctual shadow light.
 fn shadow_light_priority(light: &crate::gpu::GpuLight, view_origin: Vec3) -> f32 {
-    let distance = Vec3::from_array(light.position).distance(view_origin).max(0.01);
+    let distance = Vec3::from_array(light.position)
+        .distance(view_origin)
+        .max(0.01);
     let reach = light.range.max(0.0);
     if !reach.is_finite() || !distance.is_finite() {
         return 0.0;

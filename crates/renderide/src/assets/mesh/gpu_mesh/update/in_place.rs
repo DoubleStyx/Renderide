@@ -293,12 +293,14 @@ impl GpuMesh {
         Some(rebuild_mesh_after_in_place_write(
             self,
             data,
-            want_submeshes,
-            want_submesh_topologies,
-            skinning,
-            extended_vertex_stream_source,
-            derived_stream_state,
-            geometry_storage,
+            InPlaceMeshMetadataUpdate {
+                submeshes: want_submeshes,
+                submesh_topologies: want_submesh_topologies,
+                skinning,
+                extended_vertex_stream_source,
+                derived_stream_state,
+                geometry_storage,
+            },
         ))
     }
 }
@@ -468,17 +470,29 @@ fn updated_in_place_skinning_matrices(
     skinning
 }
 
-fn rebuild_mesh_after_in_place_write(
-    mesh: &GpuMesh,
-    data: &MeshUploadData,
+struct InPlaceMeshMetadataUpdate {
     submeshes: Vec<(u32, u32)>,
     submesh_topologies: Vec<RasterPrimitiveTopology>,
     skinning: Vec<Mat4>,
     extended_vertex_stream_source: Option<ExtendedVertexStreamSource>,
     derived_stream_state: super::super::MeshDerivedStreamState,
     geometry_storage: MeshGeometryStorage,
+}
+
+fn rebuild_mesh_after_in_place_write(
+    mesh: &GpuMesh,
+    data: &MeshUploadData,
+    update: InPlaceMeshMetadataUpdate,
 ) -> GpuMesh {
     profiling::scope!("asset::mesh_write_in_place::rebuild_metadata");
+    let InPlaceMeshMetadataUpdate {
+        submeshes,
+        submesh_topologies,
+        skinning,
+        extended_vertex_stream_source,
+        derived_stream_state,
+        geometry_storage,
+    } = update;
     GpuMesh {
         asset_id: mesh.asset_id,
         dynamic_geometry: mesh.dynamic_geometry || data.upload_hint.flags.dynamic(),
@@ -631,39 +645,37 @@ mod tests {
 
     #[test]
     fn exact_retained_geometry_match_detects_vertex_and_index_changes_independently() {
-        let (raw, data, layout) = geometry_fixture();
+        let (mut raw, data, layout) = geometry_fixture();
         let source = extended_vertex_stream_source_from_raw(&raw, &data, &layout).expect("source");
 
         let identical = retained_geometry_match(&source, &raw, &data, &layout);
         assert!(identical.vertex_unchanged);
         assert!(identical.index_unchanged);
 
-        let mut changed_vertex = raw.clone();
-        changed_vertex[0] ^= 1;
-        let vertex_match = retained_geometry_match(&source, &changed_vertex, &data, &layout);
+        raw[0] ^= 1;
+        let vertex_match = retained_geometry_match(&source, &raw, &data, &layout);
         assert!(!vertex_match.vertex_unchanged);
         assert!(vertex_match.index_unchanged);
 
-        let mut changed_index = raw.clone();
-        changed_index[layout.index_buffer_start] ^= 1;
-        let index_match = retained_geometry_match(&source, &changed_index, &data, &layout);
+        raw[0] ^= 1;
+        raw[layout.index_buffer_start] ^= 1;
+        let index_match = retained_geometry_match(&source, &raw, &data, &layout);
         assert!(index_match.vertex_unchanged);
         assert!(!index_match.index_unchanged);
     }
 
     #[test]
     fn retained_geometry_match_rejects_changed_interpretation_metadata() {
-        let (raw, data, layout) = geometry_fixture();
+        let (raw, mut data, layout) = geometry_fixture();
         let source = extended_vertex_stream_source_from_raw(&raw, &data, &layout).expect("source");
 
-        let mut changed_attributes = data.clone();
-        changed_attributes.vertex_attributes[0].attribute = VertexAttributeType::Normal;
-        let attribute_match = retained_geometry_match(&source, &raw, &changed_attributes, &layout);
+        data.vertex_attributes[0].attribute = VertexAttributeType::Normal;
+        let attribute_match = retained_geometry_match(&source, &raw, &data, &layout);
         assert!(!attribute_match.vertex_unchanged);
 
-        let mut changed_submeshes = data.clone();
-        changed_submeshes.submeshes[0].topology = SubmeshTopology::Points;
-        let submesh_match = retained_geometry_match(&source, &raw, &changed_submeshes, &layout);
+        data.vertex_attributes[0].attribute = VertexAttributeType::Position;
+        data.submeshes[0].topology = SubmeshTopology::Points;
+        let submesh_match = retained_geometry_match(&source, &raw, &data, &layout);
         assert!(!submesh_match.index_unchanged);
     }
 

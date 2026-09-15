@@ -17,7 +17,7 @@ use crate::passes::{
     normal_pipeline_key_for_draw, pre_warm_depth_prepass_pipeline, pre_warm_normal_pipeline,
 };
 use crate::render_graph::compiled::{FrameView, FrameViewTarget};
-use crate::world_mesh::{WorldMeshDrawItem, WorldMeshPhase};
+use crate::world_mesh::{WorldMeshDrawItem, WorldMeshDrawList, WorldMeshPhase};
 
 use super::super::super::{WorldMeshDrawPlanSlot, WorldMeshOverlayDrawPlanSlot};
 use super::BackendGraphAccess;
@@ -33,7 +33,6 @@ impl BackendGraphWarmupCache {
     pub(in crate::backend::facade) fn clear(&mut self) {
         self.completed = None;
     }
-
     fn is_exact_hit(
         &self,
         views: &[FrameView<'_>],
@@ -54,7 +53,6 @@ impl BackendGraphWarmupCache {
             )
         })
     }
-
     fn commit_if_ready(&mut self, ready: bool, completed: impl FnOnce() -> CompletedGraphWarmup) {
         self.completed = ready.then(completed);
     }
@@ -99,7 +97,6 @@ impl CompletedGraphWarmup {
             supports_multiview,
         }
     }
-
     fn matches(
         &self,
         views: &[FrameView<'_>],
@@ -136,8 +133,8 @@ impl CompletedGraphWarmup {
 #[derive(Clone, Debug)]
 struct CompletedViewGraphWarmup {
     view_id: crate::camera::ViewId,
-    world_draws: Option<Arc<[WorldMeshDrawItem]>>,
-    overlay_draws: Option<Arc<[WorldMeshDrawItem]>>,
+    world_draws: Option<WorldMeshDrawList>,
+    overlay_draws: Option<WorldMeshDrawList>,
     layout: Option<PreRecordViewResourceLayout>,
     overlay_layout: Option<PreRecordViewResourceLayout>,
     active_offscreen: bool,
@@ -164,7 +161,10 @@ impl CompletedViewGraphWarmup {
             view_winding,
         }
     }
-
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "warmup identity enumerates view state"
+    )]
     fn matches_inputs(
         &self,
         view_id: crate::camera::ViewId,
@@ -190,15 +190,15 @@ impl CompletedViewGraphWarmup {
 
 fn draw_list_identity(
     draw_plan: Option<&crate::world_mesh::WorldMeshDrawPlan>,
-) -> Option<&Arc<[WorldMeshDrawItem]>> {
+) -> Option<&WorldMeshDrawList> {
     draw_plan
         .and_then(crate::world_mesh::WorldMeshDrawPlan::as_prefetched)
         .map(|collection| &collection.items)
 }
 
 fn same_draw_list_identity(
-    completed: Option<&Arc<[WorldMeshDrawItem]>>,
-    current: Option<&Arc<[WorldMeshDrawItem]>>,
+    completed: Option<&WorldMeshDrawList>,
+    current: Option<&WorldMeshDrawList>,
 ) -> bool {
     match (completed, current) {
         (Some(completed), Some(current)) => Arc::ptr_eq(completed, current),
@@ -932,7 +932,7 @@ mod tests {
         })
     }
 
-    fn plan_with_items(items: Arc<[WorldMeshDrawItem]>) -> WorldMeshDrawPlan {
+    fn plan_with_items(items: WorldMeshDrawList) -> WorldMeshDrawPlan {
         let mut collection = WorldMeshDrawCollection::empty();
         collection.items = items;
         WorldMeshDrawPlan::Prefetched(Arc::new(PrefetchedWorldMeshViewDraws::new(
@@ -942,7 +942,7 @@ mod tests {
 
     #[test]
     fn warmup_identity_survives_projection_only_prefetched_wrapper_refresh() {
-        let shared_items: Arc<[WorldMeshDrawItem]> = Arc::from(vec![draw(1)]);
+        let shared_items: WorldMeshDrawList = Arc::from(vec![draw(1)]);
         let original = plan_with_items(Arc::clone(&shared_items));
         let WorldMeshDrawPlan::Prefetched(original_draws) = &original else {
             panic!("test plan must be prefetched");
@@ -975,9 +975,9 @@ mod tests {
 
     #[test]
     fn warmup_identity_rejects_equal_rows_in_a_rebuilt_draw_list() {
-        let shared_items: Arc<[WorldMeshDrawItem]> = Arc::from(vec![draw(1)]);
+        let shared_items: WorldMeshDrawList = Arc::from(vec![draw(1)]);
         let original = plan_with_items(Arc::clone(&shared_items));
-        let rebuilt_items: Arc<[WorldMeshDrawItem]> =
+        let rebuilt_items: WorldMeshDrawList =
             Arc::from(shared_items.iter().cloned().collect::<Vec<_>>());
         let rebuilt = plan_with_items(rebuilt_items);
         let completed = CompletedViewGraphWarmup::capture_inputs(

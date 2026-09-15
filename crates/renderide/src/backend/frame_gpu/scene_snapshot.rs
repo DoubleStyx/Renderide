@@ -500,6 +500,7 @@ impl SceneSnapshotSet {
         &self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
+        profiler: Option<&crate::profiling::GpuProfilerHandle>,
         source_depth: &wgpu::Texture,
         layout: SceneSnapshotLayout,
         viewport: (u32, u32),
@@ -541,22 +542,33 @@ impl SceneSnapshotSet {
                     resource: wgpu::BindingResource::TextureView(&source_view),
                 }],
             });
-            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("scene_depth_snapshot_blit"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target_view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                ..Default::default()
+            let query = profiler.map(|p| {
+                p.begin_pass_query(format!("scene_depth_snapshot_blit.layer{layer}"), encoder)
             });
-            rpass.set_pipeline(&blitter.pipeline);
-            rpass.set_bind_group(0, &bind_group, &[]);
-            rpass.draw(0..3, 0..1);
+            {
+                let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("scene_depth_snapshot_blit"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: target_view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    timestamp_writes: crate::profiling::render_pass_timestamp_writes(
+                        query.as_ref(),
+                    ),
+                    ..Default::default()
+                });
+                rpass.set_pipeline(&blitter.pipeline);
+                rpass.set_bind_group(0, &bind_group, &[]);
+                rpass.draw(0..3, 0..1);
+            }
+            if let (Some(q), Some(p)) = (query, profiler) {
+                p.end_query(encoder, q);
+            }
         }
         true
     }

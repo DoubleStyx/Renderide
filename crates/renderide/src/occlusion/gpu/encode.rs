@@ -70,8 +70,13 @@ pub(super) struct EncodeSession<'a> {
 ///
 /// Readback pressure never suppresses pyramid generation. The claimed slot travels by value with
 /// the submit callback, preventing late callbacks from consuming a newer frame's slot.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the arguments mirror the render-graph pass resources and combining them would obscure their distinct borrow lifetimes"
+)]
 pub fn encode_hi_z_build(
     record: HiZBuildRecord<'_>,
+    depth_texture: &wgpu::Texture,
     depth_view: &wgpu::TextureView,
     history: HiZHistoryTarget<'_>,
     extent: (u32, u32),
@@ -101,7 +106,7 @@ pub fn encode_hi_z_build(
         return;
     };
 
-    invalidate_caches_for_targets(scratch, depth_view, &history_views);
+    select_bind_group_cache_target(scratch, depth_texture, &history_views);
 
     let mut session = EncodeSession {
         device,
@@ -167,16 +172,14 @@ fn prepare_scratch(
     state.scratch().is_some()
 }
 
-/// Drops cached bind groups whose source views (depth attachment / pyramid target) have changed.
-fn invalidate_caches_for_targets(
+/// Selects the cached bind-group bank for this depth attachment and pyramid history half.
+fn select_bind_group_cache_target(
     scratch: &mut HiZGpuScratch,
-    depth_view: &wgpu::TextureView,
+    depth_texture: &wgpu::Texture,
     history_views: &HiZHistoryViews<'_>,
 ) {
-    scratch
-        .bind_groups
-        .invalidate_mip0_if_depth_changed(depth_view);
-    scratch.bind_groups.invalidate_pyramid_if_target_changed(
+    scratch.bind_groups.select_target(
+        depth_texture,
         &history_views.left[0],
         history_views.right.map(|views| &views[0]),
     );

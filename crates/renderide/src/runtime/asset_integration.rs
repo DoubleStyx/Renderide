@@ -111,8 +111,18 @@ impl RendererRuntime {
             .read()
             .map(|s| s.rendering.asset_integration_budget_ms)
             .unwrap_or(crate::config::DEFAULT_ASSET_INTEGRATION_BUDGET_MS);
-        self.frontend
-            .effective_asset_integration_budget_ms(coupled_default_ms)
+        let configured = self
+            .frontend
+            .effective_asset_integration_budget_ms(coupled_default_ms);
+        // Asset integration runs EARLY in the tick, so elapsed-in-tick is still near zero here and
+        // taper on it alone never fired. The previous frame's duration is the honest pressure
+        // signal for an early phase; keep the in-tick reading too for the idle/host-wait drains
+        // that run late. -xlinka
+        let pressure = self
+            .tick_state
+            .elapsed_in_tick(Instant::now())
+            .max(self.tick_state.previous_frame_duration());
+        taper_asset_budget_for_tick_pressure(configured, pressure)
     }
 
     fn asset_particle_integration_budget_ms(&self) -> u32 {
@@ -252,6 +262,95 @@ fn trace_asset_integration_summary(
             summary.render_budget_exhausted,
             summary.normal_priority_budget_exhausted,
             summary.particle_budget_exhausted,
+        );
+    }
+}
+
+/// Frame budget below which asset integration keeps its full configured slice.
+const ASSET_BUDGET_FULL_UNTIL: Duration = Duration::from_millis(4);
+/// Frame budget past which asset integration is held to the floor.
+const ASSET_BUDGET_FLOOR_AT: Duration = Duration::from_millis(10);
+/// Smallest slice asset integration always keeps, so streaming never stalls outright.
+const ASSET_BUDGET_FLOOR_MS: u32 = 1;
+
+/// Shrinks the asset-integration slice as the current tick runs long.
+///
+/// The configured budget is a flat 4ms whatever else the frame is doing. Measured in fullcap3, the
+/// median frame is 1.44ms and p99 is 27.41ms, so that flat slice is free headroom on a fast frame
+/// and pure tail on a slow one, which is backwards for the low-FPS number people actually feel.
+/// Taper it instead: full budget while the tick is still cheap, down to a floor once the frame is
+/// already blown. The floor matters, because a frame that never integrates never stops being slow.
+/// -xlinka
+fn taper_asset_budget_for_tick_pressure(configured_ms: u32, elapsed: Duration) -> u32 {
+    let floor = ASSET_BUDGET_FLOOR_MS.min(configured_ms);
+    if elapsed <= ASSET_BUDGET_FULL_UNTIL {
+        return configured_ms;
+    }
+    if elapsed >= ASSET_BUDGET_FLOOR_AT {
+        return floor;
+    }
+    let span = ASSET_BUDGET_FLOOR_AT
+        .saturating_sub(ASSET_BUDGET_FULL_UNTIL)
+        .as_secs_f32();
+    let over = elapsed
+        .saturating_sub(ASSET_BUDGET_FULL_UNTIL)
+        .as_secs_f32();
+    let taper = 1.0 - (over / span).clamp(0.0, 1.0);
+    let range = configured_ms.saturating_sub(floor) as f32;
+    floor.saturating_add((range * taper).round() as u32)
+}
+
+#[cfg(test)]
+mod asset_budget_taper_tests {
+    use super::{
+        ASSET_BUDGET_FLOOR_AT, ASSET_BUDGET_FLOOR_MS, ASSET_BUDGET_FULL_UNTIL, Duration,
+        taper_asset_budget_for_tick_pressure,
+    };
+
+    #[test]
+    fn a_cheap_tick_keeps_the_whole_configured_budget() {
+        assert_eq!(taper_asset_budget_for_tick_pressure(4, Duration::ZERO), 4);
+        assert_eq!(
+            taper_asset_budget_for_tick_pressure(4, ASSET_BUDGET_FULL_UNTIL),
+            4
+        );
+    }
+
+    #[test]
+    fn an_already_blown_tick_is_held_to_the_floor() {
+        assert_eq!(
+            taper_asset_budget_for_tick_pressure(4, ASSET_BUDGET_FLOOR_AT),
+            ASSET_BUDGET_FLOOR_MS
+        );
+        assert_eq!(
+            taper_asset_budget_for_tick_pressure(4, Duration::from_millis(120)),
+            ASSET_BUDGET_FLOOR_MS
+        );
+    }
+
+    #[test]
+    fn the_taper_is_monotonic_and_never_reaches_zero() {
+        let mut previous = u32::MAX;
+        for ms in 0..40u64 {
+            let budget = taper_asset_budget_for_tick_pressure(4, Duration::from_millis(ms));
+            assert!(
+                budget <= previous,
+                "budget must not grow as the tick runs long"
+            );
+            assert!(
+                budget >= ASSET_BUDGET_FLOOR_MS,
+                "streaming must keep a floor"
+            );
+            previous = budget;
+        }
+    }
+
+    #[test]
+    fn a_configured_budget_under_the_floor_is_not_inflated_by_it() {
+        assert_eq!(taper_asset_budget_for_tick_pressure(0, Duration::ZERO), 0);
+        assert_eq!(
+            taper_asset_budget_for_tick_pressure(0, ASSET_BUDGET_FLOOR_AT),
+            0
         );
     }
 }

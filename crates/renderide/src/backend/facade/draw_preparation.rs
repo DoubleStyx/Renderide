@@ -92,7 +92,7 @@ impl BackendDrawPreparation {
     }
 
     /// Invalidates cross-frame packets that embed GPU-device-relative atlas selections.
-    pub(super) fn reset_gpu_state(&mut self) {
+    pub(super) fn reset_gpu_state(&self) {
         self.draw_plan_cache.clear();
     }
 

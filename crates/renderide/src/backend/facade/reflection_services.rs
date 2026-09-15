@@ -12,6 +12,14 @@ use crate::scene::{RenderSpaceId, SceneApplyReport, SceneCacheFlushReport, Scene
 use crate::shared::{FrameSubmitData, RenderingContext};
 use hashbrown::HashSet;
 
+/// Per-frame policy for advancing specular reflection-probe jobs.
+pub(super) struct ReflectionProbeSpecularJobSettings {
+    pub(super) render_context: RenderingContext,
+    pub(super) reflection_probe_sh2_enabled: bool,
+    pub(super) max_local_reflection_probes: usize,
+    pub(super) advance_sliced_ibl: bool,
+}
+
 /// Nonblocking reflection-probe projection, bake, cache, and selection services.
 pub(super) struct ReflectionProbeServices {
     /// Nonblocking reflection-probe SH2 GPU projection service.
@@ -70,11 +78,14 @@ impl ReflectionProbeServices {
         gpu: &mut GpuContext,
         scene: &SceneCoordinator,
         asset_transfers: &AssetTransferQueue,
-        render_context: RenderingContext,
-        reflection_probe_sh2_enabled: bool,
-        max_local_reflection_probes: usize,
-        advance_sliced_ibl: bool,
+        settings: ReflectionProbeSpecularJobSettings,
     ) -> Option<ReflectionProbeSpecularResources> {
+        let ReflectionProbeSpecularJobSettings {
+            render_context,
+            reflection_probe_sh2_enabled,
+            max_local_reflection_probes,
+            advance_sliced_ibl,
+        } = settings;
         self.specular
             .maintain(ReflectionProbeSpecularMaintainParams {
                 gpu,

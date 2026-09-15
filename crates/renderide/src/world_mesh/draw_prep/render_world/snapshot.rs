@@ -159,6 +159,10 @@ impl SnapshotRebuildTask<'_> {
 }
 
 /// Rebuilds the per-view-consumable prepared snapshot from retained renderer templates.
+#[expect(
+    clippy::too_many_lines,
+    reason = "snapshot task admission, execution, and ordered publication form one transactional rebuild whose phase ordering must stay explicit"
+)]
 pub(super) fn rebuild_prepared_snapshot<S>(
     render_world: &mut RenderWorld,
     scene: &S,

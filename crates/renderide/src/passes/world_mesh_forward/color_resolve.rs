@@ -170,7 +170,10 @@ pub(in crate::passes::world_mesh_forward) fn encode_world_mesh_forward_msaa_colo
     Ok(true)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the resolve recorder mirrors the fixed render-pass resource set"
+)]
 fn encode_msaa_color_resolve_to_view(
     device: &wgpu::Device,
     encoder: &mut wgpu::CommandEncoder,

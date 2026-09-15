@@ -87,6 +87,7 @@ pub(super) fn encode_world_mesh_forward_depth_snapshot(
             device,
             frame.view.view_id,
             encoder,
+            profiler,
             frame.view.depth_texture,
             frame.view.viewport_px,
             prepared.pipeline.use_multiview,

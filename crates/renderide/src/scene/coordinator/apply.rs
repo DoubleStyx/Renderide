@@ -37,9 +37,8 @@ pub(in crate::scene::coordinator) use mutate::{
 
 use mutate::apply_work_slot_mutation;
 use work_units::{
-    APPLY_PARALLEL_CHUNK_SPACES, MIN_APPLY_PARALLEL_WORK_UNITS,
-    apply_parallel_admission_with_workers, apply_work_units, dominant_slot_work_units,
-    extracted_apply_work_units, is_extracted_empty, space_split_apply_preferred,
+    APPLY_PARALLEL_CHUNK_SPACES, apply_parallel_admission_with_workers, apply_work_units,
+    extracted_apply_work_units, is_extracted_empty,
 };
 
 use crate::cpu_parallelism::{current_reference_worker_count, record_parallel_admission};
@@ -110,25 +109,6 @@ impl SceneCoordinator {
         let worker_count = current_reference_worker_count();
         let admission = apply_parallel_admission_with_workers(work.len(), work_units, worker_count);
         record_parallel_admission("scene_apply", work_units, work.len(), admission);
-        if space_split_apply_preferred(
-            work.len(),
-            work_units,
-            dominant_slot_work_units(&work),
-            worker_count,
-        ) {
-            profiling::scope!("scene::apply::mutate::space_split");
-            for slot in &mut work {
-                if slot.work_units >= MIN_APPLY_PARALLEL_WORK_UNITS {
-                    profiling::scope!("scene::apply::mutate::space_split_slot");
-                    apply_work_slot_mutation(slot);
-                } else {
-                    apply_work_slot_mutation(slot);
-                }
-            }
-            self.reinsert_applied_work_slots(&mut work);
-            self.apply_scratch.work = work;
-            return Ok(());
-        }
         if !admission.is_parallel() {
             profiling::scope!("scene::apply::mutate::serial_small_batch");
             for slot in &mut work {
@@ -157,6 +137,10 @@ impl SceneCoordinator {
 
     fn reinsert_applied_work_slots(&mut self, work: &mut Vec<ApplyWorkSlot>) {
         profiling::scope!("scene::apply::reinsert");
+        // Both maps had every applied space removed by the lift above, so they regrow from scratch
+        // every frame. Reserve once instead of rehashing on the way back in. -xlinka
+        self.spaces.reserve(work.len());
+        self.world_caches.reserve(work.len());
         for slot in work.drain(..) {
             if slot.world_dirty {
                 self.world_dirty.insert(slot.id);

@@ -51,13 +51,12 @@ impl GpuSkinCache {
     #[must_use]
     pub fn maintain_capacity(&mut self, device: &wgpu::Device) -> bool {
         let capacity = self.arenas.stream_capacity_bytes();
-        let target = match skin_arena_shrink_target(
+        let Some(target) = skin_arena_shrink_target(
             capacity,
             self.arenas.max_stream_used_bytes(),
             &mut self.shrink_below_ticks,
-        ) {
-            Some(target) => target,
-            None => return false,
+        ) else {
+            return false;
         };
         self.entries.clear();
         self.arenas.reset_to_capacity(device, target);

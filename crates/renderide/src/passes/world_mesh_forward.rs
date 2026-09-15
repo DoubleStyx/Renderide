@@ -4,9 +4,8 @@
 //!
 //! World-mesh forward rendering is split across these graph passes:
 //!
-//! 1. Backend frame planning prepares sorted draws, packs per-draw VP/model uniforms
-//!    (rayon-parallel above the existing threshold), uploads the per-draw slab and frame
-//!    uniforms via the graph upload sink, and stores the prepared state in
+//! 1. Backend frame planning prepares sorted draws, packs and uploads per-view uniforms, and stores
+//!    the prepared state in
 //!    [`WorldMeshForwardPlanSlot`] before any graph pass records.
 //! 2. [`WorldMeshForwardDepthPrepass`] -- **[`RasterPass`]** that clears and fills depth for
 //!    conservative opaque draws.
@@ -70,9 +69,7 @@ pub(crate) use encode::{
     draw_shadow_depth_subset, issue_shadow_indirect_runs,
 };
 pub(crate) use geometry_populate::GeometryArenaPopulatePass;
-pub(crate) use gpu_cull::{
-    WorldMeshGpuCullGraphResources, WorldMeshGpuCullPass, take_gpu_cull_submit_resources,
-};
+pub(crate) use gpu_cull::{WorldMeshGpuCullGraphResources, WorldMeshGpuCullPass};
 pub(crate) use material_batch::{MaterialBatchBoundary, MaterialBatchPacket, MaterialDrawResolver};
 pub(crate) use normal_pass::{
     GTAO_VIEW_NORMAL_FORMAT, WorldMeshForwardNormalPipelineKey, normal_pipeline_key_for_draw,
@@ -871,6 +868,7 @@ impl RasterPass for WorldMeshDesktopOverlayPass {
                 break;
             }
         }
+        drop(geometry_arena_guard);
         prepared.tail_raster_recorded = recorded;
         ctx.blackboard
             .insert::<WorldMeshOverlayForwardPlanSlot>(prepared);

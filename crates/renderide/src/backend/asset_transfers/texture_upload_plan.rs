@@ -136,7 +136,9 @@ impl TextureUploadStepper {
                     Some(Ok(Some(payload))) => {
                         let stage = std::mem::replace(&mut self.stage, TextureUploadStage::Start);
                         let TextureUploadStage::CopyingMipChain { uploader, .. } = stage else {
-                            unreachable!();
+                            return Err(TextureUploadError::from(
+                                "texture2d upload state changed while copying its payload",
+                            ));
                         };
                         self.stage = TextureUploadStage::MipChain { uploader, payload };
                         Ok(UploadCompletion::Continue)

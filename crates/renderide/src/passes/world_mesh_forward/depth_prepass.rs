@@ -651,7 +651,9 @@ impl RasterPass for WorldMeshForwardDepthPrepass {
                 runs: &runs,
                 depth_pipelines: self.pipelines,
             });
+            drop(buffer);
         }
+        drop(arena_guard);
         Ok(())
     }
 }

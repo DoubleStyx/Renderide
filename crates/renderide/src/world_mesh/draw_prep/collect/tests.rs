@@ -14,6 +14,7 @@ use crate::materials::{
 use crate::scene::{MeshRendererInstanceId, RenderSpaceId, SceneCoordinator};
 use crate::shared::{LayerType, RenderTransform, RenderingContext, ShadowCastMode};
 use crate::world_mesh::CameraTransformDrawFilter;
+use crate::world_mesh::culling::WorldMeshCullProjParams;
 
 /// Builds a unit-scale transform for draw-prep tests.
 fn identity_transform() -> RenderTransform {
@@ -64,6 +65,8 @@ fn test_draw_context<'a>(
             view_origin_world: Vec3::ZERO,
             culling: None,
             retain_gpu_static_candidates: false,
+            shadow_caster_only: false,
+            needs_world_bounds: false,
             lod_selection_culling: None,
             mesh_lod_bias: 2.0,
             transform_filter,
@@ -221,6 +224,142 @@ fn prepared_draw(space_id: RenderSpaceId) -> FramePreparedDraw {
     }
 }
 
+/// Collects a two-slot `Off` renderer followed by one ordinary caster through the prepared path.
+fn collect_shadow_mode_test_runs(shadow_caster_only: bool) -> Vec<WorldMeshDrawItem> {
+    let mut scene = SceneCoordinator::new();
+    let space_id = RenderSpaceId(31);
+    scene.test_seed_space_identity_worlds(
+        space_id,
+        vec![identity_transform(), identity_transform()],
+        vec![-1, -1],
+    );
+
+    let mut mesh_pool = MeshPool::default_pool();
+    mesh_pool.insert(crate::assets::mesh::GpuMesh::test_draw_prep_mesh(7));
+    let store = MaterialPropertyStore::new();
+    let material_dict = MaterialDictionary::new(&store);
+    let router = MaterialRouter::new(RasterPipelineKind::Null);
+    let registry = PropertyIdRegistry::new();
+    let property_ids = MaterialPipelinePropertyIds::new(&registry);
+    let mut ctx = test_draw_context(
+        TestDrawContextResources {
+            scene: &scene,
+            mesh_pool: &mesh_pool,
+            material_dict: &material_dict,
+            router: &router,
+            property_ids: &property_ids,
+        },
+        None,
+        ViewRenderSpaceScope::AllActive,
+        ViewLayerPolicy::MainView,
+    );
+    ctx.view.shadow_caster_only = shadow_caster_only;
+
+    let mut off_first = prepared_draw(space_id);
+    off_first.shadow_cast_mode = ShadowCastMode::Off;
+    let mut off_second = off_first.clone();
+    off_second.slot_index = 1;
+    off_second.material_asset_id = 10;
+
+    let mut on = prepared_draw(space_id);
+    on.renderable_index = 1;
+    on.instance_id = MeshRendererInstanceId(12);
+    on.renderer_ordinal = 1;
+    on.node_id = 1;
+    let draws = vec![off_first, off_second, on];
+    let runs = [
+        super::super::prepared_renderables::FramePreparedRun { start: 0, end: 2 },
+        super::super::prepared_renderables::FramePreparedRun { start: 2, end: 3 },
+    ];
+    let cache = FrameMaterialBatchCache::new();
+    let filter_masks = HashMap::new();
+    let lod_visibility = LodVisibility::default();
+    let space_ids = [space_id];
+
+    collect_prepared_chunk(
+        &draws,
+        &runs,
+        &ctx,
+        CollectState {
+            cache: &cache,
+            filter_masks: &filter_masks,
+            lod_visibility: &lod_visibility,
+            space_ids: &space_ids,
+            spatial_frustum_pretested: false,
+        },
+    )
+    .0
+}
+
+#[test]
+fn prepared_rigid_override_produces_mesh_derived_world_bounds() {
+    let mut scene = SceneCoordinator::new();
+    let space_id = RenderSpaceId(32);
+    scene.test_seed_space_identity_worlds(space_id, vec![identity_transform()], vec![-1]);
+
+    let mut mesh_pool = MeshPool::default_pool();
+    let mut mesh = crate::assets::mesh::GpuMesh::test_draw_prep_mesh(7);
+    mesh.bounds = crate::shared::RenderBoundingBox {
+        center: Vec3::ZERO,
+        extents: Vec3::ONE,
+    };
+    mesh_pool.insert(mesh);
+    let store = MaterialPropertyStore::new();
+    let material_dict = MaterialDictionary::new(&store);
+    let router = MaterialRouter::new(RasterPipelineKind::Null);
+    let registry = PropertyIdRegistry::new();
+    let property_ids = MaterialPipelinePropertyIds::new(&registry);
+    let mut ctx = test_draw_context(
+        TestDrawContextResources {
+            scene: &scene,
+            mesh_pool: &mesh_pool,
+            material_dict: &material_dict,
+            router: &router,
+            property_ids: &property_ids,
+        },
+        None,
+        ViewRenderSpaceScope::AllActive,
+        ViewLayerPolicy::MainView,
+    );
+    ctx.view.needs_world_bounds = true;
+
+    let mut draw = prepared_draw(space_id);
+    draw.rigid_world_matrix_override = Some(Mat4::from_translation(Vec3::new(10.0, 0.0, 0.0)));
+    draw.particle_draw = crate::particles::ParticleDrawParams::mesh(
+        crate::shared::MeshAlignment::View,
+        glam::Vec4::ONE,
+        None,
+        glam::IVec2::ONE,
+    );
+    let cache = FrameMaterialBatchCache::new();
+    let filter_masks = HashMap::new();
+    let lod_visibility = LodVisibility::default();
+    let draws = [draw];
+    let runs = [super::super::prepared_renderables::FramePreparedRun { start: 0, end: 1 }];
+    let space_ids = [space_id];
+
+    let collected = collect_prepared_chunk(
+        &draws,
+        &runs,
+        &ctx,
+        CollectState {
+            cache: &cache,
+            filter_masks: &filter_masks,
+            lod_visibility: &lod_visibility,
+            space_ids: &space_ids,
+            spatial_frustum_pretested: false,
+        },
+    )
+    .0;
+
+    assert_eq!(collected.len(), 1);
+    let radius = Vec3::ONE.length();
+    assert!(collected[0].world_aabb.is_some());
+    let (min, max) = collected[0].world_aabb.unwrap_or((Vec3::ZERO, Vec3::ZERO));
+    assert!((min - Vec3::new(10.0 - radius, -radius, -radius)).length() < 1e-5);
+    assert!((max - Vec3::new(10.0 + radius, radius, radius)).length() < 1e-5);
+}
+
 /// Prepared collection can collapse material-slot runs from the same source renderer.
 #[test]
 fn prepared_draws_share_renderer_groups_material_slots_only() {
@@ -235,10 +374,39 @@ fn prepared_draws_share_renderer_groups_material_slots_only() {
     next_renderer.instance_id = MeshRendererInstanceId(12);
     let mut hidden_slot = second_slot.clone();
     hidden_slot.is_hidden = true;
+    let mut shadow_off_slot = second_slot.clone();
+    shadow_off_slot.shadow_cast_mode = ShadowCastMode::Off;
 
     assert!(prepared_draws_share_renderer(&first_slot, &second_slot));
     assert!(!prepared_draws_share_renderer(&second_slot, &hidden_slot));
+    assert!(!prepared_draws_share_renderer(
+        &second_slot,
+        &shadow_off_slot
+    ));
     assert!(!prepared_draws_share_renderer(&second_slot, &next_renderer));
+}
+
+#[test]
+fn world_collection_keeps_shadow_off_prepared_run() {
+    let items = collect_shadow_mode_test_runs(false);
+
+    assert_eq!(items.len(), 3);
+    assert_eq!(
+        items
+            .iter()
+            .filter(|item| item.shadow_cast_mode == ShadowCastMode::Off)
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn shadow_collection_rejects_entire_shadow_off_prepared_run() {
+    let items = collect_shadow_mode_test_runs(true);
+
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].instance_id, MeshRendererInstanceId(12));
+    assert_eq!(items[0].shadow_cast_mode, ShadowCastMode::On);
 }
 
 #[test]
@@ -555,8 +723,8 @@ fn broadphase_runs_regardless_of_gpu_static_retention() {
     );
 
     let host_camera = crate::camera::HostCameraFrame::default();
-    let culling = crate::world_mesh::culling::WorldMeshCullInput {
-        proj: crate::world_mesh::culling::WorldMeshCullProjParams {
+    let culling = WorldMeshCullInput {
+        proj: WorldMeshCullProjParams {
             world_proj: Mat4::IDENTITY,
             overlay_proj: Mat4::IDENTITY,
             vr_stereo: None,

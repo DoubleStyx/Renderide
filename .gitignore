@@ -466,3 +466,4 @@ profile.json.gz
 !crates/renderide/src/bin/**
 *.lscache
 config.toml
+/tracy_exports

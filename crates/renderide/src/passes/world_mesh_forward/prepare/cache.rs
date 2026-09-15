@@ -14,11 +14,20 @@ use super::super::MaterialBatchPacket;
 use super::super::state::WorldMeshForwardPipelineState;
 use super::material_packet_submission_fingerprint;
 
-const WORLD_MESH_FORWARD_INSTANCE_PLAN_CACHE_CAPACITY: usize = 256;
+const WORLD_MESH_FORWARD_INSTANCE_PLAN_CACHE_CAPACITY: usize = 1024;
 const WORLD_MESH_FORWARD_INSTANCE_PLAN_CACHE_MIN_DRAWS: usize = RENDER_COMMAND_CHUNK_DRAWS * 2;
 const WORLD_MESH_FORWARD_INSTANCE_PLAN_CACHE_LOW_PACKET_MIN_DRAWS: usize =
     RENDER_COMMAND_CHUNK_DRAWS * 8;
 const WORLD_MESH_FORWARD_INSTANCE_PLAN_CACHE_MIN_PACKETS: usize = 2;
+/// Packet count below which a probe is cheap enough to always be worth taking.
+///
+/// The draw-count floors above exist to amortize probe cost, but that cost is
+/// `material_packet_submission_fingerprint` per packet: it scales with PACKETS, not draws. Gating on
+/// draws rejected small views whose probe was nearly free, and that is not a harmless miss. The
+/// retained plan's `Arc` identity is the GPU cull structural cache key, so every rejected view hands
+/// it a fresh allocation and forces a full candidate re-upload. Measured in fullcap3:
+/// `gpu_cull_structural_miss_plan` 0.88 against `_arena` 0.01. -xlinka
+const WORLD_MESH_FORWARD_INSTANCE_PLAN_CACHE_CHEAP_PROBE_PACKETS: usize = 64;
 const WORLD_MESH_FORWARD_INSTANCE_PLAN_CACHE_THRASH_WINDOW_LOOKUPS: u32 = 16;
 const WORLD_MESH_FORWARD_INSTANCE_PLAN_CACHE_THRASH_MIN_HIT_RATE_PER_MILLE: u32 = 250;
 const WORLD_MESH_FORWARD_INSTANCE_PLAN_CACHE_THRASH_BYPASS_LOOKUPS: u32 = 16;
@@ -143,6 +152,9 @@ impl WorldMeshForwardInstancePlanCache {
     }
 
     fn admits_inputs(draw_count: usize, packet_count: usize) -> bool {
+        if packet_count <= WORLD_MESH_FORWARD_INSTANCE_PLAN_CACHE_CHEAP_PROBE_PACKETS {
+            return true;
+        }
         draw_count >= WORLD_MESH_FORWARD_INSTANCE_PLAN_CACHE_MIN_DRAWS
             && (packet_count >= WORLD_MESH_FORWARD_INSTANCE_PLAN_CACHE_MIN_PACKETS
                 || draw_count >= WORLD_MESH_FORWARD_INSTANCE_PLAN_CACHE_LOW_PACKET_MIN_DRAWS)
@@ -382,17 +394,34 @@ mod tests {
 
     #[test]
     fn instance_plan_cache_bypasses_small_inputs() {
+        // The draw floor only applies once a probe is expensive. Probe cost is one
+        // submission fingerprint per packet, so a heavy packet list with too few draws to
+        // amortize it is what the floor is actually for.
         let cache = WorldMeshForwardInstancePlanCache::default();
 
         assert!(!cache.should_probe_cache(
             WORLD_MESH_FORWARD_INSTANCE_PLAN_CACHE_MIN_DRAWS - 1,
-            WORLD_MESH_FORWARD_INSTANCE_PLAN_CACHE_MIN_PACKETS,
+            WORLD_MESH_FORWARD_INSTANCE_PLAN_CACHE_CHEAP_PROBE_PACKETS + 1,
         ));
 
         let stats = cache.stats();
         assert_eq!(stats.hits, 0);
         assert_eq!(stats.misses, 0);
         assert_eq!(stats.skipped_small, 1);
+    }
+
+    #[test]
+    fn a_cheap_probe_is_admitted_however_few_draws_it_has() {
+        // A rejected view hands the GPU cull structural cache a fresh plan allocation every frame,
+        // which costs a full candidate re-upload. Measured in fullcap3: 88% of structural misses
+        // were plan identity. Cheap probes must never be turned away for being small.
+        let cache = WorldMeshForwardInstancePlanCache::default();
+
+        assert!(cache.should_probe_cache(
+            1,
+            WORLD_MESH_FORWARD_INSTANCE_PLAN_CACHE_CHEAP_PROBE_PACKETS,
+        ));
+        assert_eq!(cache.stats().skipped_small, 0);
     }
 
     #[test]

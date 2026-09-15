@@ -1,5 +1,7 @@
 //! Material batch-key resolution for world-mesh draw prep.
 
+mod cached_hash;
+
 use std::sync::Arc;
 
 use crate::materials::ShaderPermutation;
@@ -17,6 +19,11 @@ use super::FrameMaterialBatchCache;
 use super::key::MaterialDrawBatchKey;
 use super::transparent::{
     TransparentMaterialClass, TransparentMaterialClassInput, transparent_class_for_material,
+};
+
+pub(super) use cached_hash::{
+    CACHED_BATCH_KEY_HASH_VARIANTS, cached_batch_key_hash_variant_index,
+    cached_batch_key_hash_variants,
 };
 
 /// Read-only material-resolution context threaded through the cache refresh walker and the cached
@@ -229,8 +236,14 @@ pub(crate) fn batch_key_for_slot_cached(
     primitive_topology: RasterPrimitiveTopology,
     cache: &FrameMaterialBatchCache,
     ctx: MaterialResolveCtx<'_>,
-) -> (MaterialDrawBatchKey, Option<glam::Vec4>) {
-    if let Some(resolved) = cache.get(material_asset_id, property_block_id) {
+) -> (MaterialDrawBatchKey, Option<glam::Vec4>, Option<u64>) {
+    if let Some((resolved, batch_key_hash)) = cache.get_with_hash(
+        material_asset_id,
+        property_block_id,
+        skinned,
+        front_face,
+        primitive_topology,
+    ) {
         let key = batch_key_from_resolved(
             material_asset_id,
             property_block_id,
@@ -239,16 +252,17 @@ pub(crate) fn batch_key_for_slot_cached(
             primitive_topology,
             resolved,
         );
-        (key, resolved.ui_rect_clip_local)
+        (key, resolved.ui_rect_clip_local, Some(batch_key_hash))
     } else {
-        batch_key_for_slot(
+        let (key, ui_rect_clip_local) = batch_key_for_slot(
             material_asset_id,
             property_block_id,
             skinned,
             front_face,
             primitive_topology,
             ctx,
-        )
+        );
+        (key, ui_rect_clip_local, None)
     }
 }
 

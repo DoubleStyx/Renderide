@@ -99,7 +99,9 @@ pub(super) struct TimedCommandBuffer {
 pub(super) enum GraphCommandRecordingPath {
     /// Record frame-global and per-view graph work using the existing phase-specific command buffers.
     StandardCommandBuffers,
-    /// Record frame-global work plus one serial swapchain view into one command encoder.
+    /// Record frame-global work plus one supported serial view into one command encoder.
+    ///
+    /// The historical variant name is retained because it is also exposed in capture diagnostics.
     SingleSwapchainEncoder,
 }
 

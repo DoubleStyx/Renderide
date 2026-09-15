@@ -330,10 +330,14 @@ fn merge_groups_detect_only_compatible_adjacent_raster_passes() -> Result<(), Gr
     assert_eq!(g.compile_stats.render_pass_merge_groups, 1);
     assert_eq!(g.compile_stats.render_pass_materialization_groups, 1);
     assert_eq!(g.schedule.recording_plan.units.len(), 1);
+    // The group stays ONE unit: merged raster steps must not be split across encoders. It is now
+    // parallel-safe because both steps are side-effect free, so it can own an encoder beside
+    // another group. A lone unit still batches Serial, since there is nothing to run beside it.
     assert_eq!(
         g.schedule.recording_plan.units[0].serial_reason,
-        RecordingSerialReason::MaterializedRasterGroup
+        RecordingSerialReason::ParallelSafe
     );
+    assert!(g.schedule.recording_plan.units[0].parallel_safe);
     assert_eq!(
         g.schedule.recording_plan.batches[0].kind,
         RecordingBatchKind::Serial

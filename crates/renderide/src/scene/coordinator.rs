@@ -47,6 +47,10 @@ pub use reports::{
     RenderWorldParticleRendererKind, RenderWorldRendererDirty, RenderWorldRendererKind,
     RenderWorldTransformDirty, SceneApplyReport, SceneCacheFlushReport,
 };
+/// Only the overlay replay tests build these dirty reports by hand; production code reads them
+/// through `SceneApplyReport` fields and never names the types.
+#[cfg(test)]
+pub use reports::{RenderWorldContextOverrideDirty, SceneRenderWorldDirtyReport};
 
 /// Dirty render spaces assigned to one world-cache flush worker.
 const WORLD_CACHE_FLUSH_PARALLEL_CHUNK_SPACES: usize = 1;
@@ -171,7 +175,64 @@ struct ApplyWorkSlot {
     world_dirty: bool,
 }
 
-fn node_is_under_override_root(
+/// Collects every node at or beneath any of `roots` by walking the hierarchy downward.
+///
+/// The alternative is testing all ~37k renderers against the roots, which stays O(renderers)
+/// however well the ancestor walk is memoized (a per-renderer memo actually made it 2.4x slower).
+/// Overrides cover a handful of subtrees, so descending is O(subtree). -xlinka
+pub(crate) fn nodes_under_override_roots(
+    space: &RenderSpaceState,
+    roots: &HashSet<i32>,
+) -> HashSet<i32> {
+    let node_count = space.node_parents.len();
+    if node_count == 0 || roots.is_empty() {
+        return HashSet::new();
+    }
+    // CSR child lists: count, prefix-sum, fill. A `Vec<Vec<i32>>` here allocates once per node,
+    // which is 37k allocations per call in a city space and cost more than the ancestor walk it
+    // replaced. Two flat arrays and no per-node allocation. -xlinka
+    // The count and fill passes MUST agree on which edges exist, or fill leaves an uninitialized
+    // slot that reads as node 0 and silently attaches the whole tree to the wrong root.
+    let edge_parent = |node: usize, parent: i32| -> Option<usize> {
+        let parent = usize::try_from(parent).ok()?;
+        (parent < node_count && parent != node).then_some(parent)
+    };
+    let mut starts = vec![0u32; node_count + 1];
+    for (node, &parent) in space.node_parents.iter().enumerate() {
+        if let Some(parent) = edge_parent(node, parent) {
+            starts[parent + 1] += 1;
+        }
+    }
+    for slot in 1..=node_count {
+        starts[slot] += starts[slot - 1];
+    }
+    let mut cursor = starts.clone();
+    let mut children = vec![0i32; starts[node_count] as usize];
+    for (node, &parent) in space.node_parents.iter().enumerate() {
+        let Some(parent) = edge_parent(node, parent) else {
+            continue;
+        };
+        let slot = &mut cursor[parent];
+        children[*slot as usize] = node as i32;
+        *slot += 1;
+    }
+    let mut covered = HashSet::new();
+    let mut stack = roots.iter().copied().collect::<Vec<_>>();
+    while let Some(node) = stack.pop() {
+        if node < 0 || !covered.insert(node) {
+            continue;
+        }
+        let Some(index) = usize::try_from(node).ok().filter(|i| *i < node_count) else {
+            continue;
+        };
+        let (from, to) = (starts[index] as usize, starts[index + 1] as usize);
+        stack.extend(children[from..to].iter().copied());
+    }
+    covered
+}
+
+#[cfg(test)]
+pub(crate) fn node_is_under_override_root(
     space: &RenderSpaceState,
     node_id: i32,
     roots: &HashSet<i32>,
@@ -244,8 +305,21 @@ impl SceneCoordinator {
             if transform_roots.is_empty() {
                 continue;
             }
+            // Descend from the override roots once, then every renderer test is a set lookup.
+            let covered_nodes = nodes_under_override_roots(space, &transform_roots);
+            // Hoisted out of the skinned loop below: it re-scanned every override and every index
+            // list PER RENDERER, so the cost was renderers x overrides x indices. Collect the
+            // covered indices once and the per-renderer test becomes a single lookup. -xlinka
+            let overridden_skinned_indices = space
+                .render_transform_overrides
+                .iter()
+                .filter(|entry| entry.context == context && entry.node_id >= 0)
+                .flat_map(|entry| entry.skinned_mesh_renderer_indices.iter().copied())
+                .filter(|&index| index >= 0)
+                .map(|index| index as usize)
+                .collect::<HashSet<_>>();
             for (renderable_index, renderer) in space.static_mesh_renderers.iter().enumerate() {
-                if node_is_under_override_root(space, renderer.node_id, &transform_roots) {
+                if covered_nodes.contains(&renderer.node_id) {
                     targets.mesh_renderers.insert(RenderWorldRendererDirty {
                         space_id,
                         kind: RenderWorldRendererKind::Static,
@@ -254,14 +328,8 @@ impl SceneCoordinator {
                 }
             }
             for (renderable_index, renderer) in space.skinned_mesh_renderers.iter().enumerate() {
-                if node_is_under_override_root(space, renderer.base.node_id, &transform_roots)
-                    || space.render_transform_overrides.iter().any(|entry| {
-                        entry.context == context
-                            && entry.node_id >= 0
-                            && entry
-                                .skinned_mesh_renderer_indices
-                                .contains(&(renderable_index as i32))
-                    })
+                if covered_nodes.contains(&renderer.base.node_id)
+                    || overridden_skinned_indices.contains(&renderable_index)
                 {
                     targets.mesh_renderers.insert(RenderWorldRendererDirty {
                         space_id,
@@ -271,7 +339,7 @@ impl SceneCoordinator {
                 }
             }
             for (renderable_index, renderer) in space.billboard_render_buffers.iter().enumerate() {
-                if node_is_under_override_root(space, renderer.node_id, &transform_roots) {
+                if covered_nodes.contains(&renderer.node_id) {
                     targets
                         .particle_renderers
                         .insert(RenderWorldParticleRendererDirty {
@@ -282,7 +350,7 @@ impl SceneCoordinator {
                 }
             }
             for (renderable_index, renderer) in space.mesh_render_buffers.iter().enumerate() {
-                if node_is_under_override_root(space, renderer.node_id, &transform_roots) {
+                if covered_nodes.contains(&renderer.node_id) {
                     targets
                         .particle_renderers
                         .insert(RenderWorldParticleRendererDirty {
@@ -293,7 +361,7 @@ impl SceneCoordinator {
                 }
             }
             for (renderable_index, renderer) in space.trail_render_buffers.iter().enumerate() {
-                if node_is_under_override_root(space, renderer.node_id, &transform_roots) {
+                if covered_nodes.contains(&renderer.node_id) {
                     targets
                         .particle_renderers
                         .insert(RenderWorldParticleRendererDirty {
@@ -769,6 +837,10 @@ impl WorldMeshSceneRead for SceneCoordinator {
             .map(|space| space.lod_groups.as_slice())
     }
 
+    fn lod_generation(&self, id: RenderSpaceId) -> Option<u64> {
+        self.spaces.get(&id).map(|space| space.lod_generation)
+    }
+
     fn billboard_render_buffers(
         &self,
         id: RenderSpaceId,
@@ -907,6 +979,10 @@ impl SceneMeshRendererRead for ContextInvariantSceneRead<'_> {
 impl WorldMeshSceneRead for ContextInvariantSceneRead<'_> {
     fn lod_groups(&self, id: RenderSpaceId) -> Option<&[super::LodGroupEntry]> {
         WorldMeshSceneRead::lod_groups(self.coordinator, id)
+    }
+
+    fn lod_generation(&self, id: RenderSpaceId) -> Option<u64> {
+        WorldMeshSceneRead::lod_generation(self.coordinator, id)
     }
 
     fn billboard_render_buffers(

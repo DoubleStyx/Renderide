@@ -18,6 +18,9 @@ use crate::world_mesh::{
 use super::draw_preparation::{DrawPreparationExtractDesc, render_context_cache_key};
 use super::{OcclusionSystem, RenderBackend};
 
+/// Generations that make one retained world-mesh draw plan reusable.
+pub(crate) type WorldMeshDrawPlanDependencies = (u8, u64, u64, (u64, u64, u32, u64));
+
 /// Immutable backend-owned extraction snapshot produced by [`RenderBackend::extract_frame_shared`].
 ///
 /// This is the runtime/backend hand-off for CPU-side world-mesh draw collection: the runtime owns
@@ -71,7 +74,7 @@ impl ExtractedFrameShared<'_> {
         &self,
         render_context: RenderingContext,
         shader_perm: ShaderPermutation,
-    ) -> Option<(u8, u64, u64, (u64, u64, u32, u64))> {
+    ) -> Option<WorldMeshDrawPlanDependencies> {
         let context_key = render_context_cache_key(self.scene, render_context);
         let render_world = self.render_worlds.get(&context_key)?;
         Some((
@@ -88,7 +91,7 @@ impl ExtractedFrameShared<'_> {
         &self,
         render_context: RenderingContext,
         shader_perm: ShaderPermutation,
-    ) -> Option<(u8, u64, u64, (u64, u64, u32, u64))> {
+    ) -> Option<WorldMeshDrawPlanDependencies> {
         let context_key = render_context_cache_key(self.scene, render_context);
         let render_world = self.render_worlds.get(&context_key)?;
         Some((
@@ -209,17 +212,17 @@ impl RenderBackend {
                 let mut store = store.write();
                 let arena = store.as_mut()?;
                 arena.synchronize_mesh_pool(mesh_pool);
-                Some(
-                    arena
-                        .take_source_release_ready_asset_ids()
-                        .into_iter()
-                        .filter_map(|asset_id| {
-                            arena
-                                .mesh(asset_id)
-                                .map(|allocation| (asset_id, allocation.derived_stream_mask()))
-                        })
-                        .collect::<Vec<_>>(),
-                )
+                let releases = arena
+                    .take_source_release_ready_asset_ids()
+                    .into_iter()
+                    .filter_map(|asset_id| {
+                        arena
+                            .mesh(asset_id)
+                            .map(|allocation| (asset_id, allocation.derived_stream_mask()))
+                    })
+                    .collect::<Vec<_>>();
+                drop(store);
+                Some(releases)
             })
             .unwrap_or_default();
 

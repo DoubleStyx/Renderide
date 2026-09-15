@@ -23,7 +23,6 @@ use super::{
 use crate::cpu_parallelism::{FrameParallelPolicy, current_reference_worker_count};
 
 /// Minimum retained node-index entries assigned to one transform expansion worker.
-///
 /// Transform classification is branchy and performs very little work per indexed node once
 /// ancestor results are memoized. Grains this coarse keep ordinary character spaces down to a
 /// handful of Rayon jobs; finer ones burn more aggregate worker time than they save in wall time.
@@ -101,10 +100,10 @@ impl<'a> TransformRootClassifier<'a> {
     fn new(parents: &'a [i32], roots: &'a [i32]) -> Self {
         let mut states = vec![TRANSFORM_NODE_UNKNOWN; parents.len()];
         for &root in roots {
-            if root >= 0 {
-                if let Some(state) = states.get_mut(root as usize) {
-                    *state = TRANSFORM_NODE_UNDER_ROOT;
-                }
+            if root >= 0
+                && let Some(state) = states.get_mut(root as usize)
+            {
+                *state = TRANSFORM_NODE_UNDER_ROOT;
             }
         }
         Self {
@@ -150,7 +149,8 @@ impl<'a> TransformRootClassifier<'a> {
                     self.path.push(current_index);
                     current = self.parents[current_index];
                 }
-                _ => unreachable!("transform-node classification state must be valid"),
+                // Treat corrupt classifier state conservatively as outside the requested roots.
+                _ => break false,
             }
         };
 

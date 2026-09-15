@@ -69,6 +69,22 @@ impl LodVisibility {
         Self { spaces }
     }
 
+    /// Folds the selection outcome into `hasher`.
+    ///
+    /// This is the ONLY camera dependency in shadow-caster collection: casters are never
+    /// frustum-culled, so a camera move that flips no LOD produces an identical caster set.
+    pub(super) fn hash_selection(&self, hasher: &mut impl std::hash::Hasher) {
+        use std::hash::Hash;
+        let mut spaces = self.spaces.iter().collect::<Vec<_>>();
+        spaces.sort_unstable_by_key(|(space_id, _)| space_id.0);
+        spaces.len().hash(hasher);
+        for (space_id, space) in spaces {
+            space_id.0.hash(hasher);
+            space.grouped.words().hash(hasher);
+            space.selected.words().hash(hasher);
+        }
+    }
+
     /// Returns whether `instance_id` may emit draws in this view.
     #[inline]
     pub(super) fn renderer_visible(

@@ -49,6 +49,40 @@ pub struct WorldMeshVisibilityStats {
     pub linear_fallback_runs: usize,
 }
 
+impl WorldMeshVisibilityStats {
+    /// Folds counters gathered by a parallel subtree walk into this total.
+    pub fn merge(&mut self, other: Self) {
+        self.indexed_runs = self.indexed_runs.saturating_add(other.indexed_runs);
+        self.fallback_runs = self.fallback_runs.saturating_add(other.fallback_runs);
+        self.candidate_runs = self.candidate_runs.saturating_add(other.candidate_runs);
+        self.raw_candidate_marks = self
+            .raw_candidate_marks
+            .saturating_add(other.raw_candidate_marks);
+        self.duplicate_candidate_marks = self
+            .duplicate_candidate_marks
+            .saturating_add(other.duplicate_candidate_marks);
+        self.broadphase_culled_runs = self
+            .broadphase_culled_runs
+            .saturating_add(other.broadphase_culled_runs);
+        self.broadphase_culled_draws = self
+            .broadphase_culled_draws
+            .saturating_add(other.broadphase_culled_draws);
+        self.linear_fallback_runs = self
+            .linear_fallback_runs
+            .saturating_add(other.linear_fallback_runs);
+    }
+}
+
+/// Shared immutable draw list handed from collection to every downstream consumer.
+///
+/// `Arc<Vec<T>>` and not `Arc<[T]>`: building an `Arc<[T]>` from a `Vec` has to allocate the
+/// refcounted block and then memcpy every element into it, which on an unculled 65k caster set was
+/// tens of MB and ~30 ms a frame. `Arc::new(vec)` moves the three-word `Vec` header instead, so the
+/// element buffer collection already built is handed over untouched. Costs one pointer hop on
+/// access, and leaves the door open to `Arc::get_mut` reuse while the refcount is 1.
+// reccomended by colin the cat
+pub type WorldMeshDrawList = std::sync::Arc<Vec<WorldMeshDrawItem>>;
+
 /// Result of queued and sorted world-mesh draws including optional frustum cull counts.
 #[derive(Clone, Debug)]
 pub struct WorldMeshDrawCollection {
@@ -56,7 +90,7 @@ pub struct WorldMeshDrawCollection {
     ///
     /// The immutable final list is shared across the retained frame cache and forward
     /// preparation. This keeps a cache hit O(1) instead of deep-cloning every draw row.
-    pub items: std::sync::Arc<[WorldMeshDrawItem]>,
+    pub items: WorldMeshDrawList,
     /// Draw slots considered for culling after material-slot to submesh-range expansion.
     pub draws_pre_cull: usize,
     /// Draws removed by frustum culling.
@@ -73,7 +107,7 @@ impl WorldMeshDrawCollection {
     /// Builds an empty draw collection that explicitly suppresses in-graph scene collection.
     pub fn empty() -> Self {
         Self {
-            items: std::sync::Arc::from([]),
+            items: std::sync::Arc::new(Vec::new()),
             draws_pre_cull: 0,
             draws_culled: 0,
             draws_hi_z_culled: 0,

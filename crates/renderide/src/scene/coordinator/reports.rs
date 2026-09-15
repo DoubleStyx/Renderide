@@ -92,6 +92,13 @@ pub struct RenderWorldContextOverrideDirty {
 pub struct SceneRenderWorldDirtyReport {
     /// Render spaces that need a full retained-template refresh.
     pub full_spaces: Vec<RenderSpaceId>,
+    /// Render spaces whose LOD group membership changed.
+    ///
+    /// LOD membership selects which retained renderers a group references; it does not alter a
+    /// single renderer template. Escalating it to [`Self::full_spaces`] re-expanded every renderer
+    /// in the space, measured at 16.4ms of `prepare_for_frame` plus an 18.8ms snapshot rebuild in
+    /// Darkcity3.tracy. The prepared side already rebuilds groups from a membership signature. -xlinka
+    pub lod_spaces: Vec<RenderSpaceId>,
     /// Renderer rows that need retained-template refresh.
     pub renderers: Vec<RenderWorldRendererDirty>,
     /// Renderer rows whose live deformation inputs changed.
@@ -121,6 +128,10 @@ pub struct SceneRenderWorldDirtyReport {
 
 impl SceneRenderWorldDirtyReport {
     /// Returns whether the report contains no fine-grained render-world work.
+    ///
+    /// Only the apply tests assert on this; production code branches on the individual lists it
+    /// actually consumes, so keeping it un-gated just trips dead_code.
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.full_spaces.is_empty()
             && self.renderers.is_empty()
@@ -156,6 +167,13 @@ impl SceneRenderWorldDirtyReport {
         };
         if !self.bounds.contains(&dirty) {
             self.bounds.push(dirty);
+        }
+    }
+
+    /// Records a render space whose LOD group membership changed.
+    pub(super) fn note_lod_space(&mut self, id: RenderSpaceId) {
+        if !self.lod_spaces.contains(&id) {
+            self.lod_spaces.push(id);
         }
     }
 
@@ -299,6 +317,14 @@ impl SceneRenderWorldDirtyReport {
 /// Scene changes observed while applying one host frame submission.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SceneApplyReport {
+    /// Per-reason counts of full-space retained-template escalations, indexed by
+    /// `FULL_SPACE_REASON_*`.
+    ///
+    /// A full-space escalation re-expands every renderer template in the space and forces a
+    /// prepared-snapshot rebuild, which measured 10.5ms + 17ms in Darkcity2.tracy against a
+    /// `dirty_renderers` count of 0.68. Six call sites can trigger it and the aggregate gives no
+    /// way to tell them apart. -xlinka
+    pub full_space_reasons: [usize; 6],
     /// Host frame index from [`crate::shared::FrameSubmitData::frame_index`].
     pub frame_index: i32,
     /// Render spaces present in the submission.
@@ -324,6 +350,7 @@ impl SceneApplyReport {
     /// Creates an empty report for `frame_index`.
     pub(super) fn new(frame_index: i32) -> Self {
         Self {
+            full_space_reasons: [0; 6],
             frame_index,
             submitted_spaces: Vec::new(),
             changed_spaces: Vec::new(),
@@ -350,6 +377,13 @@ impl SceneApplyReport {
     pub(super) fn note_render_world_classified_space(&mut self, id: RenderSpaceId) {
         if !self.render_world_classified_spaces.contains(&id) {
             self.render_world_classified_spaces.push(id);
+        }
+    }
+
+    /// Counts one full-space escalation against the reason that caused it.
+    pub(super) fn note_full_space_reason(&mut self, reason: usize) {
+        if let Some(slot) = self.full_space_reasons.get_mut(reason) {
+            *slot = slot.saturating_add(1);
         }
     }
 

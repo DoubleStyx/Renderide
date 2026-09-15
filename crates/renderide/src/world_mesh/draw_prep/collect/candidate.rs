@@ -10,8 +10,9 @@ use crate::scene::{MeshRendererInstanceId, RenderSpaceId};
 use crate::shared::ShadowCastMode;
 use crate::world_mesh::culling::overlay_rect_clip_visible;
 use crate::world_mesh::materials::{
-    FrameMaterialBatchCache, MaterialResolveCtx, apply_render_buffer_mesh_pipeline_override,
-    batch_key_for_slot_cached, compute_batch_key_hash, normalized_material_slot,
+    FrameMaterialBatchCache, MaterialDrawBatchKey, MaterialResolveCtx,
+    apply_render_buffer_mesh_pipeline_override, batch_key_for_slot_cached, compute_batch_key_hash,
+    normalized_material_slot,
 };
 
 use super::super::item::{MaterialStackOrder, WorldMeshDrawItem};
@@ -61,6 +62,16 @@ pub(super) struct DrawCandidate {
     pub(super) particle_draw: ParticleDrawParams,
 }
 
+/// Uses the cache hash unless generated billboard routing changed the resolved material key.
+#[inline]
+fn routed_batch_key_hash(batch_key: &MaterialDrawBatchKey, cached_hash: Option<u64>) -> u64 {
+    if batch_key.uses_render_buffer_billboard {
+        compute_batch_key_hash(batch_key)
+    } else {
+        cached_hash.unwrap_or_else(|| compute_batch_key_hash(batch_key))
+    }
+}
+
 /// Builds a draw item from a cull-surviving material-slot candidate without allocating.
 pub(super) fn evaluate_draw_candidate(
     ctx: &DrawCollectionInputs<'_>,
@@ -81,7 +92,7 @@ pub(super) fn evaluate_draw_candidate(
         mesh_property_block_slot0: property_block_id,
         mesh_renderer_property_block_id: None,
     };
-    let (mut batch_key, ui_rect_clip_local) = batch_key_for_slot_cached(
+    let (mut batch_key, ui_rect_clip_local, cached_batch_key_hash) = batch_key_for_slot_cached(
         material_asset_id,
         property_block_id,
         candidate.skinned,
@@ -129,7 +140,7 @@ pub(super) fn evaluate_draw_candidate(
     } else {
         0.0
     };
-    let batch_key_hash = compute_batch_key_hash(&batch_key);
+    let batch_key_hash = routed_batch_key_hash(&batch_key, cached_batch_key_hash);
     // Cache the opaque depth bucket to avoid `sqrt + log2` in each sort comparison.
     // Opaque draws use bucket zero, preserving batch-key tie-breaking.
     let opaque_depth_bucket =
@@ -251,6 +262,8 @@ mod tests {
                 view_origin_world: Vec3::ZERO,
                 culling: None,
                 retain_gpu_static_candidates: false,
+                shadow_caster_only: false,
+                needs_world_bounds: false,
                 lod_selection_culling: None,
                 mesh_lod_bias: 2.0,
                 transform_filter: None,

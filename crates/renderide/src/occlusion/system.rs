@@ -18,6 +18,8 @@ use crate::occlusion::gpu::{HiZBuildRecord, HiZGpuState, HiZHistoryTarget, encod
 
 /// Depth source, layout, and logical view for [`OcclusionSystem::encode_hi_z_build_pass`].
 pub(crate) struct HiZBuildInput<'a> {
+    /// Depth attachment allocation whose stable identity keys source-dependent mip0 bindings.
+    pub depth_texture: &'a wgpu::Texture,
     /// Depth attachment view (desktop 2D or multiview array) sampled for mip0.
     pub depth_view: &'a wgpu::TextureView,
     /// Registry-owned ping-pong history texture that receives the pyramid.
@@ -152,6 +154,7 @@ impl OcclusionSystem {
         let mut state = state_slot.lock();
         encode_hi_z_build(
             record,
+            input.depth_texture,
             input.depth_view,
             HiZHistoryTarget {
                 texture: input.history_texture,

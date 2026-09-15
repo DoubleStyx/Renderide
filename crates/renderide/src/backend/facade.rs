@@ -44,7 +44,7 @@ use frame_services::BackendFrameServices;
 pub(crate) use graph_access::BackendGraphAccess;
 use graph_access::{BackendGraphWarmupCache, LivePostProcessingSettings};
 use graph_state::RenderGraphState;
-use reflection_services::ReflectionProbeServices;
+use reflection_services::{ReflectionProbeServices, ReflectionProbeSpecularJobSettings};
 
 pub(crate) use frame_packet::ExtractedFrameShared;
 
@@ -393,10 +393,13 @@ impl RenderBackend {
             gpu,
             scene,
             &self.asset_transfers,
-            render_context,
-            experimental_settings.reflection_probe_sh2_enabled,
-            experimental_settings.effective_max_local_reflection_probes(),
-            advance_sliced_ibl,
+            ReflectionProbeSpecularJobSettings {
+                render_context,
+                reflection_probe_sh2_enabled: experimental_settings.reflection_probe_sh2_enabled,
+                max_local_reflection_probes: experimental_settings
+                    .effective_max_local_reflection_probes(),
+                advance_sliced_ibl,
+            },
         );
         let _ = self
             .frame_services

@@ -82,6 +82,10 @@ pub use coordinator::{
     RenderWorldParticleRendererKind, RenderWorldRendererDirty, RenderWorldRendererKind,
     RenderWorldTransformDirty, SceneApplyReport, SceneCacheFlushReport, SceneCoordinator,
 };
+/// Only the overlay replay tests build these dirty reports by hand; production code reads them
+/// through `SceneApplyReport` fields and never names the types.
+#[cfg(test)]
+pub use coordinator::{RenderWorldContextOverrideDirty, SceneRenderWorldDirtyReport};
 pub use ids::RenderSpaceId;
 pub use lights::{ResolvedLight, light_contributes, light_has_negative_contribution};
 pub(crate) use lod_groups::{LodEntry, LodGroupEntry, LodRendererKind, LodRendererRef};

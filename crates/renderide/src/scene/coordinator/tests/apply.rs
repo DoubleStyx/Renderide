@@ -852,7 +852,7 @@ fn render_world_dirty_report_marks_mesh_membership_as_full_space() {
 }
 
 #[test]
-fn render_world_dirty_report_marks_lod_groups_as_full_space() {
+fn render_world_dirty_report_keeps_lod_group_changes_off_the_full_space_path() {
     let mut update = empty_extracted_render_space_update();
     update.lod_groups = Some(
         crate::scene::lod_groups::ExtractedLodGroupRenderablesUpdate {
@@ -871,10 +871,11 @@ fn render_world_dirty_report_marks_lod_groups_as_full_space() {
         &update,
     );
 
-    assert_eq!(
-        report.render_world_dirty.full_spaces,
-        vec![RenderSpaceId(3)]
-    );
+    // LOD membership picks which retained renderers a group references; no renderer template
+    // changes. Escalating to a full space re-expanded every renderer, measured at 16.4ms of
+    // prepare_for_frame plus an 18.8ms snapshot rebuild in Darkcity3.tracy.
+    assert_eq!(report.render_world_dirty.lod_spaces, vec![RenderSpaceId(3)]);
+    assert!(report.render_world_dirty.full_spaces.is_empty());
     assert!(report.render_world_dirty.renderers.is_empty());
 }
 
@@ -1183,4 +1184,102 @@ fn parallel_apply_extracted_remaps_camera_portal_static_mesh_target_before_mesh_
     assert!(!dirty, "mesh removal must not dirty the world matrix cache");
     assert_eq!(space.static_mesh_renderers.len(), 3);
     assert_eq!(space.camera_portals[0].state.mesh_renderer_index, 1);
+}
+
+#[test]
+fn appended_static_mesh_renderers_do_not_escalate_to_a_full_space() {
+    // Additions push onto the dense tail, so every existing renderer index survives. Only removals
+    // relocate a row (swap_remove) and genuinely need a full-space refresh.
+    let mut update = empty_extracted_render_space_update();
+    update.meshes = Some(crate::scene::meshes::ExtractedMeshRenderablesUpdate {
+        additions: vec![7, 9, -1],
+        ..Default::default()
+    });
+    let mut space = RenderSpaceState::default();
+    space.static_mesh_renderers.push(Default::default());
+    space.static_mesh_renderers.push(Default::default());
+    space.static_mesh_renderers.push(Default::default());
+    let mut report = SceneApplyReport::default();
+
+    note_render_world_dirty_for_extracted_update(
+        &mut report,
+        RenderSpaceId(5),
+        false,
+        0,
+        Some(&space),
+        &update,
+    );
+
+    assert!(
+        report.render_world_dirty.full_spaces.is_empty(),
+        "an append-only mesh update must not re-expand the whole space"
+    );
+    let dirtied = report
+        .render_world_dirty
+        .renderers
+        .iter()
+        .map(|dirty| dirty.renderable_index)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        dirtied,
+        vec![3, 4],
+        "appended rows land at len..len + additions"
+    );
+}
+
+#[test]
+fn removed_static_mesh_renderers_still_escalate_to_a_full_space() {
+    let mut update = empty_extracted_render_space_update();
+    update.meshes = Some(crate::scene::meshes::ExtractedMeshRenderablesUpdate {
+        removals: vec![1, -1],
+        ..Default::default()
+    });
+    let mut report = SceneApplyReport::default();
+
+    note_render_world_dirty_for_extracted_update(
+        &mut report,
+        RenderSpaceId(5),
+        false,
+        0,
+        None,
+        &update,
+    );
+
+    assert_eq!(
+        report.render_world_dirty.full_spaces,
+        vec![RenderSpaceId(5)],
+        "swap_remove relocates a row, so dense indices cannot be trusted"
+    );
+}
+
+#[test]
+fn descending_from_override_roots_matches_the_ancestor_walk() {
+    // Descending covers every node beneath the roots in one pass instead of walking ancestors per
+    // renderer. If the two ever disagree, renderers silently gain or lose their context override,
+    // with no crash and no failing render.
+    use crate::scene::coordinator::{node_is_under_override_root, nodes_under_override_roots};
+    use std::collections::HashSet;
+
+    let mut space = RenderSpaceState::default();
+    // chain 0 <- 1 <- 2 <- 3, a second chain 4 <- 5, an orphan 6, and a self-parent cycle at 7
+    space.node_parents = vec![-1, 0, 1, 2, -1, 4, -1, 7];
+    for roots in [
+        vec![1i32],
+        vec![0],
+        vec![4],
+        vec![1, 4],
+        vec![6],
+        vec![7],
+        vec![],
+    ] {
+        let roots = roots.into_iter().collect::<HashSet<_>>();
+        let covered = nodes_under_override_roots(&space, &roots);
+        for node_id in 0..space.node_parents.len() as i32 {
+            assert_eq!(
+                covered.contains(&node_id),
+                node_is_under_override_root(&space, node_id, &roots),
+                "descent diverged for node {node_id} with roots {roots:?}"
+            );
+        }
+    }
 }

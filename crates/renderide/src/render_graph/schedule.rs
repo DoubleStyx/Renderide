@@ -227,8 +227,6 @@ pub enum RecordingSerialReason {
     ParallelSafe,
     /// Frame-global passes retain mutable frame scratch and record serially.
     FrameGlobalPhase,
-    /// Materialized raster groups must not be split across encoders.
-    MaterializedRasterGroup,
     /// Pass explicitly requested serial command recording.
     NeverParallel,
     /// Encoder-driven passes can contain undeclared command-level side effects.
@@ -489,13 +487,28 @@ fn build_recording_units(
                 .map(|step| step.wave_idx)
                 .max()
                 .unwrap_or(steps[group.start_step].wave_idx);
+            // A materialized group cannot be SPLIT across encoders, which is what the reason name
+            // means. It can still own one encoder and record beside another group, exactly as the
+            // frame-global split already does for shadow layers. Hardcoding false here is why
+            // `has_split_per_view_batches` was always false, which forced the whole per-view phase
+            // onto one thread. Admit the group when every step in it is individually parallel-safe;
+            // `recording_units_conflict` still vets it against its batch mates below. -xlinka
+            let group_serial_reason = steps[group.start_step..group.end_step]
+                .iter()
+                .map(|step| single_step_serial_reason(*step, pass_info.get(step.pass_idx)))
+                .find(|reason| *reason != RecordingSerialReason::ParallelSafe)
+                .unwrap_or(RecordingSerialReason::ParallelSafe);
             units.push(RecordingUnit {
                 start_step: group.start_step,
                 end_step: group.end_step,
                 phase,
                 wave_idx,
-                parallel_safe: false,
-                serial_reason: RecordingSerialReason::MaterializedRasterGroup,
+                parallel_safe: group_serial_reason == RecordingSerialReason::ParallelSafe,
+                serial_reason: if group_serial_reason == RecordingSerialReason::ParallelSafe {
+                    RecordingSerialReason::ParallelSafe
+                } else {
+                    group_serial_reason
+                },
             });
             step_idx = group.end_step;
             group_idx += 1;

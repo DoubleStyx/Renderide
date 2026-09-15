@@ -25,7 +25,6 @@ const PARAM_FIXED_SLOTS: u32 = 1 << 0;
 const PARAM_HIZ_ENABLED: u32 = 1 << 1;
 
 /// One arena-resident indexed draw and its local-space conservative bounds.
-///
 /// The 64-byte layout is mirrored exactly by `gpu_cull_compact.wgsl`.
 #[repr(C, align(16))]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
@@ -78,7 +77,6 @@ impl GpuCullCandidate {
 }
 
 /// A consecutive candidate range whose visible commands share render state.
-///
 /// Compact output for a run starts at `output_start`; its atomic count lives at `count_index`.
 #[repr(C, align(16))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
@@ -111,7 +109,6 @@ impl GpuCullRun {
 }
 
 /// Per-render-space matrices used by candidates.
-///
 /// Current frustum planes and previous local-to-clip matrices are stored for up to two eyes.
 #[repr(C, align(16))]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
@@ -125,7 +122,6 @@ pub(crate) struct GpuCullMatrix {
 
 impl GpuCullMatrix {
     /// Creates a matrix row from one or two local-to-clip transforms.
-    ///
     /// Plane extraction uses WebGPU homogeneous clip inequalities (`-w <= x,y <= w`,
     /// `0 <= z <= w`) and therefore remains correct for this renderer's reverse-Z projection.
     pub(crate) fn from_view_projections(
@@ -192,7 +188,6 @@ pub(crate) enum GpuCullOutputMode {
 }
 
 /// Optional previous-frame reverse-Z min Hi-Z pyramid views.
-///
 /// Views must be `D2`, `R32Float`, and cover the complete mip chain for their eye.
 #[derive(Clone, Copy)]
 pub(crate) struct GpuCullPreviousHiZ<'a> {
@@ -207,7 +202,6 @@ pub(crate) struct GpuCullEncode<'a> {
     pub runs: &'a [GpuCullRun],
     pub matrices: &'a [GpuCullMatrix],
     /// Caller-owned generation for the immutable candidate/run payload.
-    ///
     /// Reusing the same non-`None` value promises that `candidates`, `runs`, and their matrix
     /// indices are byte-for-byte identical to the last successful encode on this compaction
     /// object. The camera matrix contents may still change every frame. This lets retained scene
@@ -215,6 +209,8 @@ pub(crate) struct GpuCullEncode<'a> {
     pub static_input_generation: Option<u64>,
     pub output_mode: GpuCullOutputMode,
     pub previous_hiz: Option<GpuCullPreviousHiZ<'a>>,
+    /// Profiler for the count clear and the compaction dispatch, when GPU timing is on.
+    pub profiler: Option<&'a crate::profiling::GpuProfilerHandle>,
 }
 
 impl<'a> GpuCullEncode<'a> {
@@ -230,6 +226,7 @@ impl<'a> GpuCullEncode<'a> {
             static_input_generation: None,
             output_mode: GpuCullOutputMode::FixedSlots,
             previous_hiz: None,
+            profiler: None,
         }
     }
 }
@@ -443,7 +440,6 @@ pub(crate) struct GpuCullCompaction {
     count_capacity: u32,
     fallback_hiz: wgpu::TextureView,
     /// LRU order. The last entry is the bind group selected by the most recent encode.
-    ///
     /// Three entries retain both Hi-Z ping-pong halves plus the no-history fallback without
     /// rebuilding bindings when the selected history texture alternates each frame.
     bind_groups: Vec<GpuCullBindGroupCacheEntry>,
@@ -548,6 +544,10 @@ impl GpuCullCompaction {
     }
 
     /// Uploads inputs, clears compact-mode run counters, and records the culling dispatch.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one ordered GPU upload, bind, and dispatch transaction"
+    )]
     pub(crate) fn encode(
         &mut self,
         device: &wgpu::Device,
@@ -555,12 +555,15 @@ impl GpuCullCompaction {
         uploads: GraphUploadSink<'_>,
         request: GpuCullEncode<'_>,
     ) -> Result<GpuCullDispatch, GpuCullError> {
-        let candidate_count = u32::try_from(request.candidates.len())
-            .map_err(|_| GpuCullError::CountOverflow("candidate"))?;
-        let run_count =
-            u32::try_from(request.runs.len()).map_err(|_| GpuCullError::CountOverflow("run"))?;
-        let matrix_count = u32::try_from(request.matrices.len())
-            .map_err(|_| GpuCullError::CountOverflow("matrix"))?;
+        let Ok(candidate_count) = u32::try_from(request.candidates.len()) else {
+            return Err(GpuCullError::CountOverflow("candidate"));
+        };
+        let Ok(run_count) = u32::try_from(request.runs.len()) else {
+            return Err(GpuCullError::CountOverflow("run"));
+        };
+        let Ok(matrix_count) = u32::try_from(request.matrices.len()) else {
+            return Err(GpuCullError::CountOverflow("matrix"));
+        };
         let workgroup_count = candidate_count.div_ceil(WORKGROUP_SIZE);
         let max_workgroups = device.limits().max_compute_workgroups_per_dimension;
         if workgroup_count > max_workgroups {
@@ -644,9 +647,9 @@ impl GpuCullCompaction {
             matrix_count,
             output_capacity: self.output_capacity,
             count_capacity: self.count_capacity,
-            flags: u32::from(request.output_mode == GpuCullOutputMode::FixedSlots)
-                * PARAM_FIXED_SLOTS
-                | u32::from(hiz_enabled) * PARAM_HIZ_ENABLED,
+            flags: (u32::from(request.output_mode == GpuCullOutputMode::FixedSlots)
+                * PARAM_FIXED_SLOTS)
+                | (u32::from(hiz_enabled) * PARAM_HIZ_ENABLED),
             hiz_eye_mask,
             hiz_depth_bias: hiz_bias,
         };
@@ -655,22 +658,38 @@ impl GpuCullCompaction {
         if let Some(clear_bytes) =
             visible_count_clear_bytes(request.output_mode, layout.count_elements)
         {
+            let clear_scope = crate::profiling::GpuEncoderScope::begin(
+                request.profiler,
+                "gpu_cull::clear_visible_counts",
+                encoder,
+            );
             encoder.clear_buffer(&self.counts, 0, Some(clear_bytes));
+            clear_scope.end(encoder);
         }
 
         self.ensure_bind_group(device, &hiz_left, &hiz_right);
         if workgroup_count > 0 {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("gpu_cull_compact"),
-                timestamp_writes: None,
-            });
-            pass.set_pipeline(gpu_cull_pipelines().pipeline(device));
-            pass.set_bind_group(
-                0,
-                self.bind_groups.last().map(|entry| &entry.bind_group),
-                &[],
-            );
-            pass.dispatch_workgroups(workgroup_count, 1, 1);
+            let query = request
+                .profiler
+                .map(|p| p.begin_pass_query("gpu_cull::compact", encoder));
+            {
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("gpu_cull_compact"),
+                    timestamp_writes: crate::profiling::compute_pass_timestamp_writes(
+                        query.as_ref(),
+                    ),
+                });
+                pass.set_pipeline(gpu_cull_pipelines().pipeline(device));
+                pass.set_bind_group(
+                    0,
+                    self.bind_groups.last().map(|entry| &entry.bind_group),
+                    &[],
+                );
+                pass.dispatch_workgroups(workgroup_count, 1, 1);
+            }
+            if let (Some(q), Some(p)) = (query, request.profiler) {
+                p.end_query(encoder, q);
+            }
         }
 
         Ok(GpuCullDispatch {

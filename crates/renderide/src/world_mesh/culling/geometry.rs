@@ -5,7 +5,7 @@ use glam::{Mat4, Vec3};
 use crate::assets::mesh::GpuMesh;
 use crate::bounds::world_aabb_from_local_bounds;
 use crate::scene::{RenderSpaceId, SceneCoordinator, SceneTransformRead, SkinnedMeshRenderer};
-use crate::shared::RenderingContext;
+use crate::shared::{RenderBoundingBox, RenderingContext};
 
 #[cfg(test)]
 use super::WorldMeshCullInput;
@@ -44,6 +44,45 @@ pub(crate) struct MeshCullGeometry {
     /// world-space deformed vertex streams while still needing root-transform parity for culling and
     /// `front_facing`-driven shading.
     pub front_face_world_matrix: Option<Mat4>,
+}
+
+/// Builds conservative cull geometry for a rigid draw that already carries its world matrix.
+///
+/// Generated mesh-particle rows use an explicit matrix instead of a scene transform. They still
+/// need mesh-derived world bounds for CPU frustum culling, reflection-probe selection, and shadow
+/// visibility. Untrusted bounds remain uncullable while the supplied matrices are retained for
+/// raster winding and placement.
+pub(crate) fn mesh_world_geometry_for_rigid_override(
+    bounds: &RenderBoundingBox,
+    model: Mat4,
+    orientation_invariant: bool,
+) -> MeshCullGeometry {
+    let world_aabb = if mesh_bounds_degenerate_for_cull(bounds) {
+        None
+    } else if orientation_invariant {
+        // View/Facing mesh particles replace model rotation with a camera-derived orthonormal
+        // basis in WGSL. Bound every possible basis by a sphere around the model translation. The
+        // shader preserves only model column lengths, so use the same component scale here.
+        let scale = Vec3::new(
+            model.x_axis.truncate().length(),
+            model.y_axis.truncate().length(),
+            model.z_axis.truncate().length(),
+        );
+        let farthest_local = (bounds.center.abs() + bounds.extents.abs()) * scale;
+        let radius = farthest_local.length();
+        let center = model.w_axis.truncate();
+        (center.is_finite() && radius.is_finite()).then(|| {
+            let extent = Vec3::splat(radius);
+            (center - extent, center + extent)
+        })
+    } else {
+        world_aabb_from_local_bounds(bounds, model)
+    };
+    MeshCullGeometry {
+        world_aabb,
+        rigid_world_matrix: Some(model),
+        front_face_world_matrix: Some(model),
+    }
 }
 
 /// World-space AABB (and rigid matrix when applicable) for culling, evaluated once per draw slot.
@@ -138,10 +177,66 @@ where
                 front_face_world_matrix: None,
             };
         };
-        MeshCullGeometry {
-            world_aabb: world_aabb_from_local_bounds(&target.mesh.bounds, model),
-            rigid_world_matrix: Some(model),
-            front_face_world_matrix: Some(model),
-        }
+        mesh_world_geometry_for_rigid_override(&target.mesh.bounds, model, false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rigid_override_geometry_transforms_mesh_bounds() {
+        let bounds = RenderBoundingBox {
+            center: Vec3::ZERO,
+            extents: Vec3::ONE,
+        };
+        let model = Mat4::from_scale_rotation_translation(
+            Vec3::splat(2.0),
+            glam::Quat::IDENTITY,
+            Vec3::new(10.0, 0.0, 0.0),
+        );
+
+        let geometry = mesh_world_geometry_for_rigid_override(&bounds, model, false);
+
+        assert_eq!(
+            geometry.world_aabb,
+            Some((Vec3::new(8.0, -2.0, -2.0), Vec3::new(12.0, 2.0, 2.0)))
+        );
+        assert_eq!(geometry.rigid_world_matrix, Some(model));
+        assert_eq!(geometry.front_face_world_matrix, Some(model));
+    }
+
+    #[test]
+    fn rigid_override_geometry_keeps_matrix_when_bounds_are_untrusted() {
+        let model = Mat4::from_translation(Vec3::X);
+
+        let geometry =
+            mesh_world_geometry_for_rigid_override(&RenderBoundingBox::default(), model, false);
+
+        assert_eq!(geometry.world_aabb, None);
+        assert_eq!(geometry.rigid_world_matrix, Some(model));
+        assert_eq!(geometry.front_face_world_matrix, Some(model));
+    }
+
+    #[test]
+    fn rigid_override_geometry_can_bound_every_camera_aligned_orientation() {
+        let bounds = RenderBoundingBox {
+            center: Vec3::new(1.0, 0.0, 0.0),
+            extents: Vec3::new(1.0, 2.0, 3.0),
+        };
+        let model = Mat4::from_scale_rotation_translation(
+            Vec3::new(2.0, 1.0, 0.5),
+            glam::Quat::from_rotation_y(0.7),
+            Vec3::new(10.0, 20.0, 30.0),
+        );
+
+        let geometry = mesh_world_geometry_for_rigid_override(&bounds, model, true);
+        let expected_radius = Vec3::new(4.0, 2.0, 1.5).length();
+        assert!(geometry.world_aabb.is_some());
+        let (min, max) = geometry.world_aabb.unwrap_or((Vec3::ZERO, Vec3::ZERO));
+
+        assert!((min - (model.w_axis.truncate() - Vec3::splat(expected_radius))).length() < 1e-5);
+        assert!((max - (model.w_axis.truncate() + Vec3::splat(expected_radius))).length() < 1e-5);
     }
 }

@@ -14,7 +14,7 @@ use crate::gpu::{SHADOW_VIEW_KIND_DIRECTIONAL, SHADOW_VIEW_KIND_POINT, SHADOW_VI
 use crate::mesh_deform::PER_DRAW_UNIFORM_STRIDE;
 use crate::render_phase::RenderPhaseSet;
 use crate::world_mesh::test_fixtures::{DummyDrawItemSpec, dummy_world_mesh_draw_item};
-use crate::world_mesh::{DrawGroup, WorldMeshDrawItem, WorldMeshPhase};
+use crate::world_mesh::{DrawGroup, WorldMeshDrawItem, WorldMeshDrawList, WorldMeshPhase};
 
 fn limits(max_texture_dimension_2d: u32, max_texture_array_layers: u32) -> crate::gpu::GpuLimits {
     crate::gpu::GpuLimits::synthetic_for_tests(
@@ -176,6 +176,16 @@ fn shadow_split_workload_caps_command_buffer_fan_out() {
 }
 
 #[test]
+fn shadow_split_workload_coarsens_four_layer_atlas() {
+    let groups = super::SHADOW_ATLAS_PARALLEL_MIN_VISIBLE_GROUPS * 16;
+    let workload =
+        select_shadow_atlas_split_workload(4, groups, 4_096, true, 8).expect("split workload");
+
+    assert_eq!(workload.chunk_size, 2);
+    assert_eq!(workload.unit_count.div_ceil(workload.chunk_size), 2);
+}
+
+#[test]
 fn shadow_split_workload_requires_enough_work_for_two_encoders() {
     let groups = super::SHADOW_ATLAS_PARALLEL_MIN_VISIBLE_GROUPS;
 
@@ -255,7 +265,7 @@ fn shrink_window_skips_marginal_savings() {
 fn indirect_key(
     generation: u64,
     slab_slot_offset: usize,
-    draws: Arc<[WorldMeshDrawItem]>,
+    draws: WorldMeshDrawList,
     visible_groups: Arc<RenderPhaseSet<WorldMeshPhase, DrawGroup>>,
     view: &ShadowRenderView,
 ) -> super::ShadowIndirectPlanKey {
@@ -273,7 +283,7 @@ fn indirect_key(
 
 #[test]
 fn shadow_indirect_key_requires_strong_packet_identity_and_arena_generation() {
-    let draws: Arc<[WorldMeshDrawItem]> = Arc::from([dummy_draw_item()]);
+    let draws: WorldMeshDrawList = Arc::new(vec![dummy_draw_item()]);
     let groups = Arc::new(RenderPhaseSet::new());
     let view = shadow_view(SHADOW_VIEW_KIND_SPOT);
     let first = indirect_key(7, 4, Arc::clone(&draws), Arc::clone(&groups), &view);
@@ -283,7 +293,7 @@ fn shadow_indirect_key_requires_strong_packet_identity_and_arena_generation() {
     let replaced_draws = indirect_key(
         7,
         4,
-        Arc::from([dummy_draw_item()]),
+        Arc::new(vec![dummy_draw_item()]),
         Arc::clone(&groups),
         &view,
     );
@@ -304,7 +314,7 @@ fn shadow_indirect_key_requires_strong_packet_identity_and_arena_generation() {
 
 #[test]
 fn shadow_indirect_key_tracks_slab_and_exact_view_signature() {
-    let draws: Arc<[WorldMeshDrawItem]> = Arc::from([dummy_draw_item()]);
+    let draws: WorldMeshDrawList = Arc::new(vec![dummy_draw_item()]);
     let groups = Arc::new(RenderPhaseSet::new());
     let spot = shadow_view(SHADOW_VIEW_KIND_SPOT);
     let point = shadow_view(SHADOW_VIEW_KIND_POINT);

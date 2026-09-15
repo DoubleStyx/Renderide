@@ -53,9 +53,13 @@ pub(crate) struct PointMeshTargets<'a> {
 /// Uploads point instances and dispatches billboard expansion.
 ///
 /// Capacity beyond `points.len()` is filled with degenerate geometry.
+/// `profiler` is [`None`] on the asset-transfer path: it only holds `&Device`/`&Queue`, and
+/// taking a profiler handle needs `&mut GpuContext`. The plumbing is here so a caller that has
+/// one gets real timings without touching this file again.
 pub(crate) fn expand_point_mesh(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
+    profiler: Option<&crate::profiling::GpuProfilerHandle>,
     targets: PointMeshTargets<'_>,
     points: &[PointParticle],
     capacity: u32,
@@ -90,6 +94,7 @@ pub(crate) fn expand_point_mesh(
     expand_pipeline().encode(
         device,
         &mut encoder,
+        profiler,
         ParticleExpandBinding {
             params: &params_buffer,
             instances: &instance_buffer,
@@ -187,6 +192,7 @@ impl ParticleBillboardExpandPipeline {
         &self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
+        profiler: Option<&crate::profiling::GpuProfilerHandle>,
         binding: ParticleExpandBinding<'_>,
         capacity: u32,
     ) {
@@ -210,14 +216,20 @@ impl ParticleBillboardExpandPipeline {
                 entry(10, binding.indices),
             ],
         });
-        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("particle_billboard_expand"),
-            timestamp_writes: None,
-        });
-        pass.set_pipeline(self.pipeline(device));
-        pass.set_bind_group(0, &bind_group, &[]);
-        let workgroups = capacity.div_ceil(EXPAND_WORKGROUP_SIZE);
-        pass.dispatch_workgroups(workgroups, 1, 1);
+        let query = profiler.map(|p| p.begin_pass_query("particles::billboard_expand", encoder));
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("particle_billboard_expand"),
+                timestamp_writes: crate::profiling::compute_pass_timestamp_writes(query.as_ref()),
+            });
+            pass.set_pipeline(self.pipeline(device));
+            pass.set_bind_group(0, &bind_group, &[]);
+            let workgroups = capacity.div_ceil(EXPAND_WORKGROUP_SIZE);
+            pass.dispatch_workgroups(workgroups, 1, 1);
+        }
+        if let (Some(q), Some(p)) = (query, profiler) {
+            p.end_query(encoder, q);
+        }
     }
 
     fn bind_group_layout(&self, device: &wgpu::Device) -> &wgpu::BindGroupLayout {

@@ -1,5 +1,7 @@
 //! Unit tests for retained render-world dirty tracking and snapshot maintenance.
 
+mod context_overlay;
+
 use super::refresh::refresh_render_world_space;
 use super::snapshot::{SnapshotRebuildSource, SnapshotRendererTable, build_snapshot_rebuild_tasks};
 use super::state::{RenderWorldRendererRef, RenderWorldRendererTemplate};
@@ -7,7 +9,8 @@ use super::*;
 use crate::cpu_parallelism::{FrameParallelPolicy, ParallelAdmission};
 use crate::scene::{
     BillboardRenderBufferEntry, MeshMaterialSlot, MeshRenderBufferEntry, MeshRendererInstanceId,
-    SceneCacheFlushReport, SceneCoordinator, SkinnedMeshRenderer, StaticMeshRenderer,
+    MeshRendererOverrideTarget, RenderWorldContextOverrideDirty, SceneCacheFlushReport,
+    SceneCoordinator, SceneRenderWorldDirtyReport, SkinnedMeshRenderer, StaticMeshRenderer,
 };
 use crate::shared::{RenderTransform, ShadowCastMode};
 use crate::world_mesh::culling::MeshCullGeometry;
@@ -993,6 +996,142 @@ fn mesh_row_patch_replays_into_the_overlay_without_recloning() {
         overlay.maintenance_stats().context_overlay_clone_count,
         0,
         "a non-structural mesh row patch must replay, not re-clone"
+    );
+}
+
+/// Material this context's override swaps in; the base world keeps [`BASE_MATERIAL_ASSET_ID`].
+const OVERRIDDEN_MATERIAL_ASSET_ID: i32 = 22;
+/// Material the renderer declares before any context override is applied.
+const BASE_MATERIAL_ASSET_ID: i32 = 7;
+
+/// Base + overlay pair over a space that actually expands to a drawable renderer, with a
+/// material override applied only in `render_context`.
+fn drawing_overlay_pair(
+    space_id: RenderSpaceId,
+    render_context: RenderingContext,
+) -> (SceneCoordinator, MeshPool, RenderWorld, RenderWorld) {
+    let mesh_asset_id = 191;
+    let mut scene = SceneCoordinator::new();
+    // Seed transforms first: `test_insert_static_mesh_renderers` replaces the whole space, so it
+    // would drop the nodes. `test_set_static_mesh_renderers` mutates the seeded one instead.
+    scene.test_seed_space_identity_worlds(space_id, vec![identity_transform()], vec![-1]);
+    scene.test_set_static_mesh_renderers(
+        space_id,
+        vec![StaticMeshRenderer {
+            instance_id: MeshRendererInstanceId(1),
+            node_id: 0,
+            mesh_asset_id,
+            material_slots: vec![MeshMaterialSlot {
+                material_asset_id: BASE_MATERIAL_ASSET_ID,
+                property_block_id: None,
+            }],
+            ..Default::default()
+        }],
+    );
+    scene.test_set_space_active(space_id, true);
+    // A material override is used rather than a transform one because it lands on the prepared
+    // row itself, so a test can see whether the row was actually re-derived.
+    scene.test_push_material_override(
+        space_id,
+        0,
+        render_context,
+        MeshRendererOverrideTarget::Static(0),
+        0,
+        OVERRIDDEN_MATERIAL_ASSET_ID,
+    );
+    let mut mesh_pool = MeshPool::default_pool();
+    mesh_pool.insert(crate::assets::mesh::GpuMesh::test_draw_prep_mesh(
+        mesh_asset_id,
+    ));
+    let point_render_buffers = HashMap::new();
+    let mut base = RenderWorld::new_context_invariant(render_context);
+    let mut overlay = RenderWorld::new_context_overlay(render_context);
+    base.prepare_for_frame(
+        &scene.context_invariant_read(),
+        &mesh_pool,
+        &point_render_buffers,
+        render_context,
+    );
+    overlay.prepare_context_overlay_from(
+        &base,
+        &scene,
+        &mesh_pool,
+        &point_render_buffers,
+        render_context,
+    );
+    (scene, mesh_pool, base, overlay)
+}
+
+/// Scene-apply report announcing that this context's override rows changed.
+fn context_override_report(space_id: RenderSpaceId, context: RenderingContext) -> SceneApplyReport {
+    SceneApplyReport {
+        render_world_dirty: SceneRenderWorldDirtyReport {
+            context_overrides: vec![RenderWorldContextOverrideDirty { space_id, context }],
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+#[test]
+fn override_membership_change_replays_targets_without_recloning() {
+    let space_id = RenderSpaceId(74);
+    let render_context = RenderingContext::Camera;
+    let (scene, mesh_pool, base, mut overlay) = synced_overlay_pair(space_id, render_context);
+    let point_render_buffers = HashMap::new();
+
+    overlay.note_scene_apply_report(&context_override_report(space_id, render_context));
+    overlay.prepare_context_overlay_from(
+        &base,
+        &scene,
+        &mesh_pool,
+        &point_render_buffers,
+        render_context,
+    );
+
+    let stats = overlay.maintenance_stats();
+    assert_eq!(
+        stats.context_overlay_clone_count, 0,
+        "an override-only change must re-expand its targets, not clone every retained template"
+    );
+    assert_eq!(stats.context_overlay_override_replay_count, 1);
+}
+
+#[test]
+fn a_renderer_that_loses_its_override_is_restored_on_replay() {
+    // The replay set has to be the union of old and new targets. If it were only the new set, a
+    // renderer whose override was just removed would never be revisited and would keep the stale
+    // override for the life of the overlay.
+    let space_id = RenderSpaceId(75);
+    let render_context = RenderingContext::Camera;
+    let (mut scene, mesh_pool, base, mut overlay) = drawing_overlay_pair(space_id, render_context);
+    let point_render_buffers = HashMap::new();
+    assert_eq!(
+        overlay.prepared.draws()[0].material_asset_id,
+        OVERRIDDEN_MATERIAL_ASSET_ID,
+        "fixture must start with the override applied to the overlay"
+    );
+    assert_eq!(
+        base.prepared.draws()[0].material_asset_id,
+        BASE_MATERIAL_ASSET_ID,
+        "the context-invariant base must never see the override"
+    );
+
+    scene.test_clear_material_overrides(space_id);
+    overlay.note_scene_apply_report(&context_override_report(space_id, render_context));
+    overlay.prepare_context_overlay_from(
+        &base,
+        &scene,
+        &mesh_pool,
+        &point_render_buffers,
+        render_context,
+    );
+
+    assert_eq!(overlay.maintenance_stats().context_overlay_clone_count, 0);
+    assert_eq!(
+        overlay.prepared.draws()[0].material_asset_id,
+        BASE_MATERIAL_ASSET_ID,
+        "removing the override must re-derive the renderer back to its declared material"
     );
 }
 

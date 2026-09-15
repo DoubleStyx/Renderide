@@ -7,6 +7,12 @@ pub(super) struct DenseBitSet {
 }
 
 impl DenseBitSet {
+    /// Raw backing words, for content fingerprints.
+    #[inline]
+    pub(super) fn words(&self) -> &[u64] {
+        &self.words
+    }
+
     /// Clears all set bits while retaining allocation.
     #[inline]
     pub(super) fn clear(&mut self) {

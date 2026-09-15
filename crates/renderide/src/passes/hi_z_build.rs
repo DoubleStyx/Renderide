@@ -105,6 +105,7 @@ impl ComputePass for HiZBuildPass {
             },
             frame.view.hi_z_slot.as_ref(),
             HiZBuildInput {
+                depth_texture: frame.view.depth_texture,
                 depth_view: depth_sample_view,
                 history_texture: &hi_z_history.texture,
                 history_mip_views: &hi_z_history.mip_views,

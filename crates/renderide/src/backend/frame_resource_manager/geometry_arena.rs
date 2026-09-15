@@ -5,7 +5,7 @@ use std::sync::Arc;
 use hashbrown::HashSet;
 
 use crate::shared::ShadowCastMode;
-use crate::world_mesh::{WorldMeshDrawItem, WorldMeshDrawPlan, WorldMeshPhase};
+use crate::world_mesh::{WorldMeshDrawItem, WorldMeshDrawList, WorldMeshDrawPlan, WorldMeshPhase};
 
 use super::manager::{FrameResourceManager, GeometryArenaFramePlan};
 use super::shadows::ShadowFramePlan;
@@ -13,8 +13,8 @@ use super::shadows::ShadowFramePlan;
 /// Retained draw-array identities for one arena frame plan.
 #[derive(Default)]
 struct GeometryArenaFramePlanKey {
-    world_draws: Vec<Arc<[WorldMeshDrawItem]>>,
-    shadow_source_draws: Vec<Arc<[WorldMeshDrawItem]>>,
+    world_draws: Vec<WorldMeshDrawList>,
+    shadow_source_draws: Vec<WorldMeshDrawList>,
 }
 
 impl GeometryArenaFramePlanKey {
@@ -29,7 +29,7 @@ impl GeometryArenaFramePlanKey {
     }
 }
 
-fn arc_slice_identities_match<T>(left: &[Arc<[T]>], right: &[Arc<[T]>]) -> bool {
+fn arc_slice_identities_match<T>(left: &[Arc<T>], right: &[Arc<T>]) -> bool {
     left.len() == right.len()
         && left
             .iter()
@@ -371,7 +371,7 @@ mod tests {
         plan_from_items(items.into())
     }
 
-    fn plan_from_items(items: Arc<[WorldMeshDrawItem]>) -> WorldMeshDrawPlan {
+    fn plan_from_items(items: WorldMeshDrawList) -> WorldMeshDrawPlan {
         WorldMeshDrawPlan::Prefetched(Arc::new(PrefetchedWorldMeshViewDraws::new(
             WorldMeshDrawCollection {
                 draws_pre_cull: items.len(),
@@ -448,8 +448,8 @@ mod tests {
         let shadow_plan = ShadowFramePlan {
             caster_sets: vec![ShadowCasterSet {
                 first_dynamic_instance: u32::MAX,
-                source_draws: Arc::from([draw(10), draw(20), deformed.clone()]),
-                draws: Arc::from([draw(10), draw(20), deformed]),
+                source_draws: Arc::new(vec![draw(10), draw(20), deformed.clone()]),
+                draws: Arc::new(vec![draw(10), draw(20), deformed]),
                 instance_plan: Default::default(),
                 slab_slot_offset: 0,
             }],
@@ -476,8 +476,8 @@ mod tests {
         let shadow_plan = ShadowFramePlan {
             caster_sets: vec![ShadowCasterSet {
                 first_dynamic_instance: u32::MAX,
-                source_draws: Arc::from([draw(20)]),
-                draws: Arc::from([draw(20)]),
+                source_draws: Arc::new(vec![draw(20)]),
+                draws: Arc::new(vec![draw(20)]),
                 instance_plan: Default::default(),
                 slab_slot_offset: 0,
             }],
@@ -502,7 +502,7 @@ mod tests {
 
     #[test]
     fn frame_plan_reuses_shared_draw_array_across_new_view_packets() {
-        let items: Arc<[WorldMeshDrawItem]> = Arc::from([draw(10), draw(20), draw(10)]);
+        let items: WorldMeshDrawList = Arc::new(vec![draw(10), draw(20), draw(10)]);
         let first = plan_from_items(Arc::clone(&items));
         // Camera/Hi-Z refreshes replace the outer prefetched packet while retaining this immutable
         // item array. Arena planning should therefore stay a cache hit.
@@ -656,12 +656,12 @@ mod tests {
     fn frame_plan_reuses_shadow_source_identity_when_filtered_packet_is_rebuilt() {
         use crate::backend::frame_resource_manager::ShadowCasterSet;
 
-        let source: Arc<[WorldMeshDrawItem]> = Arc::from([draw(20)]);
+        let source: WorldMeshDrawList = Arc::new(vec![draw(20)]);
         let mut shadow_plan = ShadowFramePlan {
             caster_sets: vec![ShadowCasterSet {
                 first_dynamic_instance: u32::MAX,
                 source_draws: Arc::clone(&source),
-                draws: Arc::from([draw(20)]),
+                draws: Arc::new(vec![draw(20)]),
                 instance_plan: Default::default(),
                 slab_slot_offset: 0,
             }],
@@ -678,7 +678,7 @@ mod tests {
             &mut frame,
             &mut cache,
         ));
-        shadow_plan.caster_sets[0].draws = Arc::from([draw(20)]);
+        shadow_plan.caster_sets[0].draws = Arc::new(vec![draw(20)]);
         assert!(collect_geometry_arena_frame_plan(
             std::iter::empty(),
             &shadow_plan,
@@ -696,12 +696,12 @@ mod tests {
     fn frame_plan_invalidates_when_shadow_refresh_selection_changes() {
         use crate::backend::frame_resource_manager::ShadowCasterSet;
 
-        let source: Arc<[WorldMeshDrawItem]> = Arc::from([draw(20)]);
+        let source: WorldMeshDrawList = Arc::new(vec![draw(20)]);
         let mut shadow_plan = ShadowFramePlan {
             caster_sets: vec![ShadowCasterSet {
                 first_dynamic_instance: u32::MAX,
                 source_draws: source,
-                draws: Arc::from([draw(20)]),
+                draws: Arc::new(vec![draw(20)]),
                 instance_plan: Default::default(),
                 slab_slot_offset: 0,
             }],

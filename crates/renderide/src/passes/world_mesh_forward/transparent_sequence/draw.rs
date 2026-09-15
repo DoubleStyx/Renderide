@@ -18,6 +18,10 @@ use super::order::consecutive_named_grab_run_end;
 use super::snapshot::scene_color_snapshot_mode_for_group;
 
 /// Draws sorted transparent and grab ranges in one render pass.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the transparent sequence must preserve one ordered render pass while interleaving transparent and scene-grab ranges"
+)]
 pub(super) fn draw_transparent_sequence_ranges(
     ctx: &mut EncoderPassCtx<'_, '_, '_>,
     prepared: &PreparedWorldMeshForwardFrame,
@@ -33,11 +37,6 @@ pub(super) fn draw_transparent_sequence_ranges(
 
     let device = ctx.device;
     let frame = &ctx.frame;
-    let geometry_arena_arc = frame.systems.frame_resources.shared_geometry_arena();
-    let geometry_arena_guard = geometry_arena_arc.as_ref().map(|arena| arena.read());
-    let geometry_arena = geometry_arena_guard
-        .as_ref()
-        .and_then(|guard| guard.as_ref());
     let sample_count = frame.view.sample_count.max(1);
     let Some(targets) = forward_draw_attachment_targets(resources, sample_count) else {
         return Err(RenderPassError::FrameParamsRequired {
@@ -83,6 +82,11 @@ pub(super) fn draw_transparent_sequence_ranges(
         .profiler
         .map(|p| p.begin_pass_query("WorldMeshForwardTransparentSequenceDraw", ctx.encoder));
     let timestamp_writes = crate::profiling::render_pass_timestamp_writes(pass_query.as_ref());
+    let geometry_arena_arc = frame.systems.frame_resources.shared_geometry_arena();
+    let geometry_arena_guard = geometry_arena_arc.as_ref().map(|arena| arena.read());
+    let geometry_arena = geometry_arena_guard
+        .as_ref()
+        .and_then(|guard| guard.as_ref());
     let recorded = {
         let mut rpass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("WorldMeshForwardTransparentSequenceDraw"),
@@ -168,6 +172,7 @@ pub(super) fn draw_transparent_sequence_ranges(
         rpass.pop_debug_group();
         recorded
     };
+    drop(geometry_arena_guard);
     if let (Some(p), Some(q)) = (ctx.profiler, pass_query) {
         p.end_query(ctx.encoder, q);
     }

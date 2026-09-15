@@ -2,6 +2,13 @@
 //!
 //! Position offsets define `base_vertex`; derived streams use the same vertex slot. Separate
 //! `u16` and `u32` index buffers preserve each mesh's index width.
+#![expect(
+    clippy::expect_used,
+    clippy::option_option,
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "arena transactions keep explicit state and ordered GPU operations together"
+)]
 use hashbrown::{HashMap, HashSet};
 
 use crate::assets::mesh::MeshDerivedStreamMask;
@@ -21,6 +28,15 @@ const MIN_STREAM_ARENA_BYTES: u64 = 256 * 1024;
 
 /// Minimum saving required to compact while both buffer generations are resident.
 const MIN_COMPACTION_RECLAIM_BYTES: u64 = 8 * 1024 * 1024;
+/// Largest live-geometry copy one compaction may perform in a single frame.
+///
+/// Compaction repacks by copying every live range into replacement buffers, synchronously, inside
+/// the frame that triggers it. Measured in Darkcity.tracy: `geometry_arena_compaction_copy_bytes`
+/// peaked at 744 MB in ONE frame, alongside 27 arena buffer recreations and 22 ms of
+/// `Device::maintain` cleaning up the corpses. That is the 1442 ms max frame. Reclaiming VRAM is
+/// never worth a multi-hundred-millisecond stall, so decline the repack when the copy is oversized
+/// and let the arena keep its headroom. -xlinka
+const MAX_COMPACTION_COPY_BYTES: u64 = 32 * 1024 * 1024;
 
 /// A newly materialized optional stream this far beyond the start of its buffer is considered
 /// sparse enough to request a packed rebuild at the next frame boundary.
@@ -653,7 +669,6 @@ impl GeometryArena {
     }
 
     /// Rebuilds committed arena contents into smaller packed buffers entirely through GPU copies.
-    ///
     /// This must run before any arena consumer is recorded for the frame. The replacement stays
     /// transactional until [`Self::retain_submit_resources`]: an aborted graph restores the old
     /// handles, allocation map, and allocators without consulting released CPU upload sources.
@@ -661,6 +676,7 @@ impl GeometryArena {
         &mut self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
+        profiler: Option<&crate::profiling::GpuProfilerHandle>,
     ) -> GeometryArenaReclaimStats {
         if !self.reclamation_requested {
             return GeometryArenaReclaimStats::default();
@@ -713,6 +729,14 @@ impl GeometryArena {
                 .rows
                 .iter()
                 .any(|row| row.new.vertices.offset_bytes != row.old.vertices.offset_bytes);
+        // Budget check first: an oversized repack stalls the frame no matter how much it would
+        // reclaim, and a refused-stream layout fix does not earn an exemption from it.
+        if self.resident_allocation_bytes() > MAX_COMPACTION_COPY_BYTES {
+            return GeometryArenaReclaimStats {
+                evaluated: true,
+                ..Default::default()
+            };
+        }
         if !repacks_refused_stream
             && !compaction_is_worthwhile(old_allocated_bytes, new_allocated_bytes)
         {
@@ -797,6 +821,12 @@ impl GeometryArena {
         self.stream_growth_denied_bytes = [0; ArenaStream::COUNT];
         self.stream_sparse_refused = [false; ArenaStream::COUNT];
 
+        // One scope for the whole repack: per-row queries would be thousands of timestamps.
+        let compaction_scope = crate::profiling::GpuEncoderScope::begin(
+            profiler,
+            "geometry_arena::compaction_copy",
+            encoder,
+        );
         for row in &plan.rows {
             encoder.copy_buffer_to_buffer(
                 &self.positions.buffer,
@@ -850,6 +880,7 @@ impl GeometryArena {
                 );
             }
         }
+        compaction_scope.end(encoder);
 
         let checkpoint = GeometryCompactionRollback {
             positions: std::mem::replace(&mut self.positions, new_positions),
@@ -893,11 +924,7 @@ impl GeometryArena {
             self.indices32.buffer.clone(),
             self.indices16.buffer.clone(),
         ]);
-        resources.retain_buffers(
-            self.streams
-                .iter()
-                .filter_map(|stream| stream.as_ref().cloned()),
-        );
+        resources.retain_buffers(self.streams.iter().flatten().cloned());
         resources.retain_buffers(self.retired_buffers.drain(..));
         if let Some(checkpoint) = self.compaction_rollback.take() {
             resources.retain_buffers([
@@ -1042,6 +1069,7 @@ impl GeometryArena {
         &mut self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
+        profiler: Option<&crate::profiling::GpuProfilerHandle>,
         asset_id: i32,
         sources: &MeshStreamSources<'_>,
     ) -> Option<GeometryAllocation> {
@@ -1055,6 +1083,7 @@ impl GeometryArena {
                 let updated = self.copy_optional_streams(
                     device,
                     encoder,
+                    profiler,
                     existing,
                     sources.vertex_count,
                     sources.optional,
@@ -1090,6 +1119,7 @@ impl GeometryArena {
         let vertices = allocate_growing(
             device,
             encoder,
+            profiler,
             &mut self.positions,
             position_bytes,
             placement,
@@ -1105,6 +1135,7 @@ impl GeometryArena {
             match allocate_growing(
                 device,
                 encoder,
+                profiler,
                 index_arena,
                 index_bytes,
                 ArenaPlacement::Low,
@@ -1121,6 +1152,7 @@ impl GeometryArena {
 
         copy_buffer_aligned(
             encoder,
+            profiler,
             sources.position,
             &self.positions.buffer,
             vertices.offset_bytes,
@@ -1133,6 +1165,7 @@ impl GeometryArena {
         };
         copy_buffer_aligned(
             encoder,
+            profiler,
             sources.index,
             index_dst,
             index_range.offset_bytes,
@@ -1164,6 +1197,7 @@ impl GeometryArena {
         let entry = self.copy_optional_streams(
             device,
             encoder,
+            profiler,
             entry,
             sources.vertex_count,
             sources.optional,
@@ -1182,12 +1216,14 @@ impl GeometryArena {
         &mut self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
+        profiler: Option<&crate::profiling::GpuProfilerHandle>,
         asset_id: i32,
         optional: &[(ArenaStream, &wgpu::Buffer)],
     ) -> Option<GeometryAllocation> {
         let entry = self.entries.get(&asset_id).copied()?;
         let vertex_count = entry.allocation.vertex_count;
-        let updated = self.copy_optional_streams(device, encoder, entry, vertex_count, optional);
+        let updated =
+            self.copy_optional_streams(device, encoder, profiler, entry, vertex_count, optional);
         let allocation = updated.allocation;
         if allocation.stream_bits != entry.allocation.stream_bits {
             self.bump_allocation_generation();
@@ -1202,6 +1238,7 @@ impl GeometryArena {
         &mut self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
+        profiler: Option<&crate::profiling::GpuProfilerHandle>,
         mut entry: GeometryEntry,
         vertex_count: u32,
         optional: &[(ArenaStream, &wgpu::Buffer)],
@@ -1228,15 +1265,27 @@ impl GeometryArena {
                 continue;
             }
             let required_size = dst_offset.saturating_add(copy_bytes);
-            let Some(dst) =
-                self.ensure_stream_buffer(device, encoder, stream, required_size, payload_bytes)
-            else {
+            let Some(dst) = self.ensure_stream_buffer(
+                device,
+                encoder,
+                profiler,
+                stream,
+                required_size,
+                payload_bytes,
+            ) else {
                 // The mesh keeps drawing this stream from its own buffer. Recording the demand
                 // moves it into the low region on the next packed rebuild, where the copy fits.
                 entry.refused_stream_bits |= stream.bit();
                 continue;
             };
-            copy_buffer_aligned(encoder, src, dst, base_vertex * stride, payload_bytes);
+            copy_buffer_aligned(
+                encoder,
+                profiler,
+                src,
+                dst,
+                base_vertex * stride,
+                payload_bytes,
+            );
             self.retired_buffers.push(src.clone());
             alloc.stream_bits |= stream.bit();
             entry.refused_stream_bits &= !stream.bit();
@@ -1262,6 +1311,7 @@ impl GeometryArena {
         &mut self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
+        profiler: Option<&crate::profiling::GpuProfilerHandle>,
         stream: ArenaStream,
         required_size: u64,
         payload_bytes: u64,
@@ -1304,6 +1354,11 @@ impl GeometryArena {
             if self.stream_rollback_buffers[slot].is_none() {
                 self.stream_rollback_buffers[slot] = Some(self.streams[slot].clone());
             }
+            let stream_grow_scope = crate::profiling::GpuEncoderScope::begin(
+                profiler,
+                "geometry_arena::stream_grow_copy",
+                encoder,
+            );
             encoder.copy_buffer_to_buffer(
                 self.streams[slot].as_ref()?,
                 0,
@@ -1311,6 +1366,7 @@ impl GeometryArena {
                 0,
                 current_size,
             );
+            stream_grow_scope.end(encoder);
             if let Some(previous) = self.streams[slot].replace(replacement) {
                 self.retired_buffers.push(previous);
             }
@@ -1371,6 +1427,7 @@ impl GeometryArena {
 /// size so the copy stays valid for odd `u16` index counts and short streams.
 fn copy_buffer_aligned(
     encoder: &mut wgpu::CommandEncoder,
+    profiler: Option<&crate::profiling::GpuProfilerHandle>,
     src: &wgpu::Buffer,
     dst: &wgpu::Buffer,
     dst_offset: u64,
@@ -1380,7 +1437,10 @@ fn copy_buffer_aligned(
     if size == 0 {
         return;
     }
+    let scope =
+        crate::profiling::GpuEncoderScope::begin(profiler, "geometry_arena::stream_copy", encoder);
     encoder.copy_buffer_to_buffer(src, 0, dst, dst_offset, size);
+    scope.end(encoder);
 }
 
 fn aligned_copy_size(bytes: u64, source_size: u64) -> u64 {
@@ -1412,8 +1472,8 @@ fn build_compaction_plan(
         .map(|(&asset_id, &entry)| (asset_id, entry))
         .collect::<Vec<_>>();
     ordered.sort_unstable_by(|(left_id, left), (right_id, right)| {
-        optional_layout_weight(*right)
-            .cmp(&optional_layout_weight(*left))
+        optional_layout_weight(right)
+            .cmp(&optional_layout_weight(left))
             .then_with(|| {
                 right
                     .allocation
@@ -1461,7 +1521,7 @@ fn build_compaction_plan(
         // Keep the packed layout split the same way live allocation splits it: streams low, core
         // only meshes at the top. Packing everything densely from zero would put the next
         // stream-bearing mesh above every core-only one and reopen the sparse-stream problem.
-        let placement = if optional_layout_weight(entry) == 0 {
+        let placement = if optional_layout_weight(&entry) == 0 {
             ArenaPlacement::High
         } else {
             ArenaPlacement::Low
@@ -1525,7 +1585,7 @@ fn build_compaction_plan(
 }
 
 /// Total stride of the streams a mesh needs in the arena, resident or refused for sparsity.
-fn optional_layout_weight(entry: GeometryEntry) -> u64 {
+fn optional_layout_weight(entry: &GeometryEntry) -> u64 {
     let needed = entry.allocation.stream_bits | entry.refused_stream_bits;
     ArenaStream::ALL
         .into_iter()
@@ -1619,6 +1679,7 @@ fn rebuild_compacted_core_allocators(
 fn allocate_growing(
     device: &wgpu::Device,
     encoder: &mut wgpu::CommandEncoder,
+    profiler: Option<&crate::profiling::GpuProfilerHandle>,
     arena: &mut GrowableGeometryBuffer,
     bytes: u64,
     placement: ArenaPlacement,
@@ -1637,7 +1698,10 @@ fn allocate_growing(
     // Growth that the device refuses leaves the current buffer authoritative and fails this one
     // allocation, so the mesh keeps its dedicated buffers for the frame.
     let replacement = create_arena_buffer(device, arena.label, new_capacity, arena.usage)?;
+    let grow_scope =
+        crate::profiling::GpuEncoderScope::begin(profiler, "geometry_arena::grow_copy", encoder);
     encoder.copy_buffer_to_buffer(&arena.buffer, 0, &replacement, 0, arena.buffer.size());
+    grow_scope.end(encoder);
     if arena.rollback_buffer.is_none() {
         arena.rollback_buffer = Some(arena.buffer.clone());
     }
@@ -2274,6 +2338,14 @@ mod tests {
                 .offset_bytes,
             live_index16_bytes
         );
+    }
+
+    #[test]
+    fn the_compaction_copy_budget_is_smaller_than_the_stalls_it_prevents() {
+        // Darkcity.tracy peaked at 744 MB copied in one frame. Whatever the budget is tuned to, it
+        // has to stay far below that, and above the reclaim floor or compaction could never run.
+        assert!(MAX_COMPACTION_COPY_BYTES < 64 * 1024 * 1024);
+        assert!(MAX_COMPACTION_COPY_BYTES > MIN_COMPACTION_RECLAIM_BYTES);
     }
 
     #[test]

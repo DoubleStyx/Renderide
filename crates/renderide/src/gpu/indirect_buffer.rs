@@ -153,9 +153,9 @@ mod tests {
         let bytes: &[u8] = bytemuck::cast_slice(&commands);
         assert_eq!(bytes.len(), 40);
         // The second command starts at byte 20; its first_index (third word) lands at byte 28.
-        assert_eq!(bytes[28..32], 36u32.to_ne_bytes());
+        assert_eq!(bytes[28..32], 36u32.to_le_bytes());
         // base_vertex (fourth word) follows at byte 32.
-        assert_eq!(bytes[32..36], 24i32.to_ne_bytes());
+        assert_eq!(bytes[32..36], 24i32.to_le_bytes());
     }
 
     #[test]

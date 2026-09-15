@@ -703,14 +703,11 @@ mod tests {
             let ready = ready.clone();
             let refreshes = refreshes.clone();
             threads.push(std::thread::spawn(move || {
-                {
-                    let allocator = shared.read();
-                    assert!(
-                        allocator
-                            .stable_slot(&cache_key, size, generations(3), 4)
-                            .is_none()
-                    );
-                }
+                let stale_slot_missing = shared
+                    .read()
+                    .stable_slot(&cache_key, size, generations(3), 4)
+                    .is_none();
+                assert!(stale_slot_missing);
                 ready.wait();
 
                 let mut allocator = shared.write();

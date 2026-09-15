@@ -348,7 +348,7 @@ impl StatsSection for DrawStatsSection {
             draw_batch_rows(ui, m);
             draw_submission_rows(ui, m);
             draw_culling_rows(ui, m);
-            render_world_maintenance_row(ui, f.mesh_draw.render_world_maintenance);
+            render_world_maintenance_row(ui, &f.mesh_draw.render_world_maintenance);
             command_cache_row(ui, f.mesh_draw.command_cache);
             instance_plan_cache_row(ui, f.mesh_draw.instance_plan_cache);
         });
@@ -500,7 +500,7 @@ fn draw_culling_rows(ui: &imgui::Ui, stats: &WorldMeshDrawStats) {
 }
 
 /// Renders retained render-world cache maintenance counters.
-fn render_world_maintenance_row(ui: &imgui::Ui, stats: RenderWorldMaintenanceStats) {
+fn render_world_maintenance_row(ui: &imgui::Ui, stats: &RenderWorldMaintenanceStats) {
     kv(
         ui,
         "Render world",

@@ -41,6 +41,10 @@ use super::super::shadow_atlas_format::{
 };
 use super::{FrameGpuResources, ShadowResourceSyncResult};
 
+mod telemetry;
+
+use telemetry::{plot_shadow_atlas, shadow_visible_group_stats};
+
 /// Main-graph frame-global pass name for shadow-atlas rendering.
 pub(crate) const SHADOW_ATLAS_PASS_NAME: &str = "shadow_atlas";
 
@@ -59,6 +63,12 @@ const SHADOW_ATLAS_PARALLEL_MIN_VISIBLE_GROUPS: usize = RENDER_COMMAND_CHUNK_DRA
 /// More encoders increase fixed `CommandEncoder::finish` and submit bookkeeping faster than they
 /// improve CPU occupancy for the small layer counts used by the atlas.
 const SHADOW_ATLAS_PARALLEL_MAX_ENCODERS: usize = 4;
+/// Minimum atlas layers assigned to each split encoder.
+///
+/// A Tracy capture showed that four one-layer encoders plus the serial frame-global encoder were
+/// emitted on nearly every split frame. Command-encoder finish is a fixed-cost CPU hotspot, so a
+/// split must coarsen rather than merely turn each layer into another command buffer.
+const SHADOW_ATLAS_PARALLEL_MIN_LAYERS_PER_ENCODER: usize = 2;
 /// Estimated group/draw work required to amortize one split command buffer.
 const SHADOW_ATLAS_PARALLEL_MIN_WORK_PER_ENCODER: usize = RENDER_COMMAND_CHUNK_DRAWS * 2;
 
@@ -130,103 +140,6 @@ fn shadow_view_uses_radial_depth(kind: u32) -> bool {
     matches!(kind, SHADOW_VIEW_KIND_POINT | SHADOW_VIEW_KIND_SPOT)
 }
 
-fn plot_shadow_atlas(
-    plan: &ShadowFramePlan,
-    indirect: ShadowIndirectCacheResult,
-    upload_bytes: usize,
-) {
-    let (visible_groups, visible_group_draws) = shadow_visible_group_stats(plan);
-    crate::profiling::plot_shadow_atlas(
-        plan.render_views.len(),
-        plan.caster_sets.len(),
-        plan.requested_draw_slots,
-        visible_groups,
-        visible_group_draws,
-        upload_bytes,
-    );
-    plot_shadow_static_split_stats(plan);
-    let stats = plan.cache_stats;
-    crate::profiling::plot_shadow_cache(crate::profiling::ShadowCacheProfileSample {
-        caster_plan_hits: stats.caster_plan_hits,
-        caster_plan_misses: stats.caster_plan_misses,
-        visibility_hits: stats.visibility_hits,
-        visibility_misses: stats.visibility_misses,
-        content_hash_hits: stats.content_hash_hits,
-        avoided_caster_draw_scans: stats.avoided_caster_draw_scans,
-        avoided_visibility_group_tests: stats.avoided_visibility_group_tests,
-        avoided_visibility_draw_tests: stats.avoided_visibility_draw_tests,
-        avoided_content_hash_draws: stats.avoided_content_hash_draws,
-        indirect_hit: indirect.hit,
-        avoided_indirect_layers: indirect.avoided_layers,
-        avoided_indirect_commands: indirect.avoided_commands,
-        avoided_indirect_upload_bytes: indirect.avoided_upload_bytes,
-    });
-}
-
-/// Counts how each rendering layer resolved its static/dynamic split this frame.
-fn plot_shadow_static_split_stats(plan: &ShadowFramePlan) {
-    let mut full = 0usize;
-    let mut dynamic_over_static = 0usize;
-    let mut static_refresh = 0usize;
-    let mut skipped_static_draws = 0usize;
-    for &layer_idx in &plan.rendering_layer_indices {
-        let Some(view) = plan.render_views.get(layer_idx as usize) else {
-            continue;
-        };
-        let Some(caster_set) = plan.caster_sets.get(view.caster_set_index) else {
-            continue;
-        };
-        match view.render_scope {
-            ShadowRenderScope::DynamicOverStatic { refresh_static } => {
-                dynamic_over_static = dynamic_over_static.saturating_add(1);
-                if refresh_static {
-                    static_refresh = static_refresh.saturating_add(1);
-                } else {
-                    skipped_static_draws = skipped_static_draws
-                        .saturating_add(static_visible_draws(view, caster_set));
-                }
-            }
-            ShadowRenderScope::Full => full = full.saturating_add(1),
-            ShadowRenderScope::Reuse => {}
-        }
-    }
-    crate::profiling::plot_shadow_static_split(
-        full,
-        dynamic_over_static,
-        static_refresh,
-        skipped_static_draws,
-    );
-}
-
-/// Draw submissions in a layer's static half, which a restored layer never records.
-fn static_visible_draws(view: &ShadowRenderView, caster_set: &ShadowCasterSet) -> usize {
-    let mut draws = 0usize;
-    for phase in WorldMeshPhase::PRIMARY_FORWARD {
-        for group in view.groups(phase) {
-            if caster_set.group_is_dynamic(group) {
-                break;
-            }
-            draws = draws.saturating_add(
-                (group.instance_range.end - group.instance_range.start) as usize,
-            );
-        }
-    }
-    draws
-}
-
-fn shadow_visible_group_stats(plan: &ShadowFramePlan) -> (usize, usize) {
-    let mut groups = 0usize;
-    let mut draws = 0usize;
-    for &layer_idx in &plan.rendering_layer_indices {
-        let Some(view) = plan.render_views.get(layer_idx as usize) else {
-            continue;
-        };
-        groups = groups.saturating_add(view.visible_group_count);
-        draws = draws.saturating_add(view.visible_group_draw_count);
-    }
-    (groups, draws)
-}
-
 fn select_shadow_atlas_split_workload(
     rendering_layers: usize,
     visible_groups: usize,
@@ -243,7 +156,10 @@ fn select_shadow_atlas_split_workload(
     let estimated_work = visible_groups.saturating_add(visible_group_draws);
     let work_limited_encoder_count =
         estimated_work.div_ceil(SHADOW_ATLAS_PARALLEL_MIN_WORK_PER_ENCODER);
+    let layer_limited_encoder_count =
+        rendering_layers / SHADOW_ATLAS_PARALLEL_MIN_LAYERS_PER_ENCODER;
     let encoder_count = rendering_layers
+        .min(layer_limited_encoder_count)
         .min(worker_count)
         .min(SHADOW_ATLAS_PARALLEL_MAX_ENCODERS)
         .min(work_limited_encoder_count);
@@ -425,9 +341,8 @@ struct ShadowIndirectLayerKey {
     layer: u32,
     slab_slot_offset: usize,
     view_signature: super::super::frame_resource_manager::ShadowViewSignature,
-    draws: Arc<[crate::world_mesh::WorldMeshDrawItem]>,
-    visible_groups:
-        Arc<crate::render_phase::RenderPhaseSet<WorldMeshPhase, DrawGroup>>,
+    draws: crate::world_mesh::WorldMeshDrawList,
+    visible_groups: Arc<crate::render_phase::RenderPhaseSet<WorldMeshPhase, DrawGroup>>,
 }
 
 impl ShadowIndirectPlanKey {
@@ -637,33 +552,36 @@ impl ShadowAtlasResources {
         self.sync_result(true)
     }
 
-    /// Reallocates the static depth store to match the atlas it backs.
+    /// Reallocates the static depth store to back the atlas's low layers.
     ///
-    /// The store is 1:1 with atlas layers, so any atlas reshape invalidates it wholesale. Declining
-    /// to allocate is a supported outcome: layers just fall back to redrawing in full.
+    /// Any atlas reshape invalidates the store wholesale. The store is capped by its VRAM budget,
+    /// so a deep atlas gets partial coverage instead of nothing: atlas layers past the cap fall
+    /// back to redrawing in full, which is exactly what they did before the store existed.
     fn resync_static_store(&mut self, device: &wgpu::Device) {
         if !self.renderable {
             self.static_store = None;
             return;
         }
+        let budgeted = static_store::budgeted_layers(self.resolution, self.layers, self.format);
         if self
             .static_store
             .as_ref()
-            .is_some_and(|store| store.matches(self.resolution, self.layers))
+            .is_some_and(|store| store.matches(self.resolution, budgeted))
         {
             return;
         }
         self.static_store =
-            static_store::ShadowStaticStore::new(device, self.resolution, self.layers, self.format);
+            static_store::ShadowStaticStore::new(device, self.resolution, budgeted, self.format);
         if self.static_store.is_some() && self.static_restore_pipeline.is_none() {
             self.static_restore_pipeline =
                 Some(static_store::create_restore_pipeline(device, self.format));
         }
         match self.static_store.as_ref() {
             Some(store) => logger::info!(
-                "Shadow static depth store: {}x{} x{} layers ({:.1} MB)",
+                "Shadow static depth store: {}x{} covering {}/{} atlas layers ({:.1} MB)",
                 self.resolution,
                 self.resolution,
+                store.layers(),
                 self.layers,
                 store.vram_bytes(self.format) as f64 / (1024.0 * 1024.0),
             ),
@@ -773,23 +691,18 @@ impl ShadowAtlasResources {
         uploads: GraphUploadSink<'_>,
     ) -> ShadowIndirectCacheResult {
         profiling::scope!("shadows::build_shadow_indirect_plan");
-        let arena_guard = self.geometry_arena.read();
-        let mut indirect_plan = self.indirect_plan.write();
         if !crate::world_mesh::world_mesh_render_path().uses_indirect_draws()
             || !gpu_limits.supports_indirect_first_instance()
             || !gpu_limits.supports_base_instance
         {
-            indirect_plan.runs_by_layer.clear();
-            indirect_plan.key_initialized = false;
-            indirect_plan.command_count = 0;
-            return ShadowIndirectCacheResult::default();
+            return self.clear_shadow_indirect_plan();
         }
+        let arena_guard = self.geometry_arena.read();
         let Some(arena) = arena_guard.as_ref() else {
-            indirect_plan.runs_by_layer.clear();
-            indirect_plan.key_initialized = false;
-            indirect_plan.command_count = 0;
-            return ShadowIndirectCacheResult::default();
+            drop(arena_guard);
+            return self.clear_shadow_indirect_plan();
         };
+        let mut indirect_plan = self.indirect_plan.write();
         indirect_plan.pending_key.clear();
         indirect_plan.pending_key.allocation_generation = arena.allocation_generation();
         for &layer_idx in &plan.rendering_layer_indices {
@@ -819,6 +732,8 @@ impl ShadowAtlasResources {
                 >()),
             };
             indirect_plan.pending_key.clear();
+            drop(indirect_plan);
+            drop(arena_guard);
             return result;
         }
 
@@ -848,6 +763,7 @@ impl ShadowAtlasResources {
                 indirect_plan.runs_by_layer.insert(view.layer, runs);
             }
         }
+        drop(arena_guard);
         let count = u32::try_from(commands.len()).unwrap_or(u32::MAX);
         indirect_plan.command_count = commands.len();
         if count == 0 {
@@ -870,6 +786,17 @@ impl ShadowAtlasResources {
         std::mem::swap(key, pending_key);
         pending_key.clear();
         *key_initialized = true;
+        drop(indirect_plan);
+        ShadowIndirectCacheResult::default()
+    }
+
+    /// Invalidates retained indirect commands when the path cannot consume them this frame.
+    fn clear_shadow_indirect_plan(&self) -> ShadowIndirectCacheResult {
+        let mut indirect_plan = self.indirect_plan.write();
+        indirect_plan.runs_by_layer.clear();
+        indirect_plan.key_initialized = false;
+        indirect_plan.command_count = 0;
+        drop(indirect_plan);
         ShadowIndirectCacheResult::default()
     }
 
@@ -1285,7 +1212,10 @@ impl FrameGpuResources {
     /// otherwise restore garbage. Falling back to a full redraw is always correct, just slower.
     fn resolved_shadow_render_scope(&self, view: &ShadowRenderView) -> ShadowRenderScope {
         if view.render_scope.restores_static_depth()
-            && (self.shadows.static_store_layer_bind_group(view.layer).is_none()
+            && (self
+                .shadows
+                .static_store_layer_bind_group(view.layer)
+                .is_none()
                 || self.shadows.static_restore_pipeline().is_none())
         {
             return ShadowRenderScope::Full;
@@ -1419,32 +1349,37 @@ impl FrameGpuResources {
             let previous_len = uniforms.len();
             uniforms.resize_with(plan.requested_draw_slots, PaddedShadowCasterDraw::zeroed);
             uniforms.truncate(plan.requested_draw_slots);
-            let mut dirty_rows = self.shadows.scratch_dirty_rows.lock();
-            dirty_rows.clear();
-            dirty_rows.resize(plan.requested_draw_slots, false);
-            for (set_idx, caster_set) in plan.caster_sets.iter().enumerate() {
-                if !set_used.get(set_idx).copied().unwrap_or(false) {
-                    continue;
+            let dirty_ranges = {
+                let mut dirty_rows = self.shadows.scratch_dirty_rows.lock();
+                dirty_rows.clear();
+                dirty_rows.resize(plan.requested_draw_slots, false);
+                for (set_idx, caster_set) in plan.caster_sets.iter().enumerate() {
+                    if !set_used.get(set_idx).copied().unwrap_or(false) {
+                        continue;
+                    }
+                    let start = caster_set.slab_slot_offset;
+                    let Some(end) = start.checked_add(caster_set.draws.len()) else {
+                        continue;
+                    };
+                    let (Some(slots), Some(set_dirty_rows)) =
+                        (uniforms.get_mut(start..end), dirty_rows.get_mut(start..end))
+                    else {
+                        continue;
+                    };
+                    pack_shadow_uniforms(
+                        slots,
+                        set_dirty_rows,
+                        start,
+                        previous_len,
+                        caster_set,
+                        gpu_limits,
+                    );
                 }
-                let start = caster_set.slab_slot_offset;
-                let Some(end) = start.checked_add(caster_set.draws.len()) else {
-                    continue;
-                };
-                let (Some(slots), Some(set_dirty_rows)) =
-                    (uniforms.get_mut(start..end), dirty_rows.get_mut(start..end))
-                else {
-                    continue;
-                };
-                pack_shadow_uniforms(
-                    slots,
-                    set_dirty_rows,
-                    start,
-                    previous_len,
-                    caster_set,
-                    gpu_limits,
-                );
-            }
-            for (start, end) in shadow_dirty_row_ranges(&dirty_rows) {
+                let ranges = shadow_dirty_row_ranges(&dirty_rows).collect::<Vec<_>>();
+                drop(dirty_rows);
+                ranges
+            };
+            for (start, end) in dirty_ranges {
                 upload_bytes = upload_bytes.saturating_add(
                     end.saturating_sub(start)
                         .saturating_mul(size_of::<PaddedShadowCasterDraw>()),

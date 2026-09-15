@@ -191,7 +191,10 @@ impl CompiledRenderGraph {
     /// then share a rayon join since both only need shared borrows; the serial after-split range
     /// records last. Submit order is unchanged because command buffers are assembled in schedule
     /// order regardless of recording order.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the split recorder keeps independently borrowed frame stages explicit"
+    )]
     fn record_split_frame_global_and_per_view(
         &self,
         mv_ctx: &mut MultiViewExecutionContext<'_>,
@@ -248,7 +251,13 @@ impl CompiledRenderGraph {
             let mut per_view_profiler = gpu.take_gpu_profiler();
             let transient_ro: &HashMap<GraphResolveKey, GraphResolvedResources> = transient_by_key;
             let (split_result, per_view_result) = rayon::join(
-                || self.record_frame_global_split_stage_commands(&stage, &split_shared),
+                || {
+                    self.record_frame_global_split_stage_commands(
+                        &stage,
+                        &split_shared,
+                        per_view_profiler.as_ref(),
+                    )
+                },
                 || {
                     profiling::scope!("graph::record_per_view_batch");
                     self.record_per_view_batch_with_shared(
@@ -446,7 +455,7 @@ impl CompiledRenderGraph {
         })
     }
 
-    /// Records frame-global work and one serial swapchain view into a single command encoder.
+    /// Records frame-global work and one supported serial view into a single command encoder.
     fn record_single_swapchain_graph_command(
         &self,
         mv_ctx: &mut MultiViewExecutionContext<'_>,

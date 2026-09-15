@@ -279,11 +279,16 @@ pub trait GraphPerDrawSlabResources {
 /// Graph-facing access to scene-depth and scene-color snapshot copies.
 pub trait GraphSceneSnapshotResources {
     /// Blits the current depth attachment into this view's sampled R32Float scene-depth snapshot.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "graph boundary mirrors the depth-copy resource contract"
+    )]
     fn copy_scene_depth_snapshot_for_view(
         &self,
         device: &wgpu::Device,
         view_id: ViewId,
         encoder: &mut wgpu::CommandEncoder,
+        profiler: Option<&crate::profiling::GpuProfilerHandle>,
         source_depth: &wgpu::Texture,
         viewport: (u32, u32),
         multiview: bool,
@@ -434,6 +439,15 @@ pub trait GraphAssetResources: Send + Sync {
 blackboard_slot! {
     /// Blackboard slot for per-view HUD data collected during recording and merged on the main thread.
     pub PerViewHudOutputsSlot => PerViewHudOutputs,
+}
+
+blackboard_slot! {
+    /// GPU resources a per-view pass must keep alive until the deferred submit takes ownership.
+    ///
+    /// Recording drains this right before it recycles the view blackboard. It lives here rather
+    /// than beside the pass that fills it so the graph core never has to name a concrete pass:
+    /// `render_graph -> passes` is a banned layer edge.
+    pub(crate) PerViewSubmitRetainedResourcesSlot => GpuRetainedResources,
 }
 
 blackboard_slot! {
@@ -707,6 +721,10 @@ impl SceneMeshRendererRead for FrameSceneRead<'_> {
 impl WorldMeshSceneRead for FrameSceneRead<'_> {
     fn lod_groups(&self, id: RenderSpaceId) -> Option<&[LodGroupEntry]> {
         WorldMeshSceneRead::lod_groups(self.coordinator, id)
+    }
+
+    fn lod_generation(&self, id: RenderSpaceId) -> Option<u64> {
+        WorldMeshSceneRead::lod_generation(self.coordinator, id)
     }
 
     fn billboard_render_buffers(&self, id: RenderSpaceId) -> Option<&[BillboardRenderBufferEntry]> {

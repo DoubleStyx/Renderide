@@ -12,7 +12,8 @@ use crate::shared::{LightType, ShadowCastMode};
 use crate::world_mesh::draw_prep::WorldMeshDrawCollection;
 use crate::world_mesh::test_fixtures::{DummyDrawItemSpec, dummy_world_mesh_draw_item};
 use crate::world_mesh::{
-    PrefetchedWorldMeshViewDraws, WorldMeshDrawItem, WorldMeshDrawPlan, WorldMeshPhase,
+    PrefetchedWorldMeshViewDraws, WorldMeshDrawItem, WorldMeshDrawList, WorldMeshDrawPlan,
+    WorldMeshPhase,
 };
 use glam::Vec3;
 
@@ -79,7 +80,7 @@ fn prefetched_plan(items: Vec<WorldMeshDrawItem>) -> WorldMeshDrawPlan {
     WorldMeshDrawPlan::Prefetched(Arc::new(PrefetchedWorldMeshViewDraws::new(
         WorldMeshDrawCollection {
             draws_pre_cull: items.len(),
-            items: items.into(),
+            items: Arc::new(items),
             draws_culled: 0,
             draws_hi_z_culled: 0,
             visibility: Default::default(),
@@ -181,7 +182,7 @@ fn point_shadow_faces_share_caster_set_slab_range() {
 
     let draw_plan = WorldMeshDrawPlan::Prefetched(Arc::new(PrefetchedWorldMeshViewDraws::new(
         WorldMeshDrawCollection {
-            items: vec![first, second].into(),
+            items: Arc::new(vec![first, second]),
             draws_pre_cull: 2,
             draws_culled: 0,
             draws_hi_z_culled: 0,
@@ -264,7 +265,10 @@ fn shadow_caster_plan_merges_forward_material_state_changes() {
     let plan = super::build_shadow_caster_plan(&[first, second], true);
 
     assert_eq!(plan.instance_plan.slab_layout, vec![0, 1]);
-    assert_eq!(plan.instance_plan.phase_len(WorldMeshPhase::ForwardOpaque), 1);
+    assert_eq!(
+        plan.instance_plan.phase_len(WorldMeshPhase::ForwardOpaque),
+        1
+    );
     assert_eq!(
         plan.instance_plan.phase(WorldMeshPhase::ForwardOpaque)[0].instance_range,
         0..2
@@ -281,7 +285,10 @@ fn shadow_caster_plan_keeps_deformed_draws_singleton() {
     let plan = super::build_shadow_caster_plan(&[first, second], true);
 
     assert_eq!(plan.instance_plan.slab_layout, vec![0, 1]);
-    assert_eq!(plan.instance_plan.phase_len(WorldMeshPhase::ForwardOpaque), 2);
+    assert_eq!(
+        plan.instance_plan.phase_len(WorldMeshPhase::ForwardOpaque),
+        2
+    );
     assert_eq!(
         plan.instance_plan.phase(WorldMeshPhase::ForwardOpaque)[0].instance_range,
         0..1
@@ -300,9 +307,13 @@ fn shadow_caster_plan_keeps_downlevel_draws_singleton() {
     let plan = super::build_shadow_caster_plan(&[first, second], false);
 
     assert_eq!(plan.instance_plan.slab_layout, vec![0, 1]);
-    assert_eq!(plan.instance_plan.phase_len(WorldMeshPhase::ForwardOpaque), 2);
+    assert_eq!(
+        plan.instance_plan.phase_len(WorldMeshPhase::ForwardOpaque),
+        2
+    );
     assert!(
-        plan.instance_plan.phase(WorldMeshPhase::ForwardOpaque)
+        plan.instance_plan
+            .phase(WorldMeshPhase::ForwardOpaque)
             .iter()
             .all(|group| group.instance_range.end - group.instance_range.start == 1)
     );
@@ -617,6 +628,163 @@ fn shadow_light_order_is_declaration_order_without_a_camera_fit() {
     );
 }
 
+/// Caster whose world AABB sits inside identity clip when `visible`, far outside x when not.
+fn placed_caster(node_id: i32, visible: bool) -> WorldMeshDrawItem {
+    let mut item = pbs_draw(node_id, ShadowCastMode::On);
+    let x = if visible { 0.0 } else { 100.0 };
+    item.world_aabb = Some((
+        Vec3::new(x - 0.25, -0.25, 0.1),
+        Vec3::new(x + 0.25, 0.25, 0.9),
+    ));
+    item
+}
+
+fn caster_set_of(draws: Vec<WorldMeshDrawItem>) -> super::ShadowCasterSet {
+    let plan = super::build_shadow_caster_plan(&draws, true);
+    let draws: WorldMeshDrawList = Arc::new(draws);
+    super::ShadowCasterSet {
+        source_draws: Arc::clone(&draws),
+        draws,
+        instance_plan: plan.instance_plan,
+        slab_slot_offset: 0,
+        first_dynamic_instance: plan.first_dynamic_instance,
+    }
+}
+
+fn visible_ranges(set: &super::ShadowCasterSet) -> Vec<std::ops::Range<u32>> {
+    super::visible_shadow_groups_for_view(glam::Mat4::IDENTITY, set)
+        .lease
+        .groups
+        .phase(WorldMeshPhase::ForwardOpaque)
+        .items()
+        .iter()
+        .map(|group| group.instance_range.clone())
+        .collect()
+}
+
+#[test]
+fn caster_filter_shares_the_source_array_when_everything_casts() {
+    let items: WorldMeshDrawList = vec![
+        pbs_draw(1, ShadowCastMode::On),
+        pbs_draw(2, ShadowCastMode::On),
+    ]
+    .into();
+
+    let casters = super::filter_shadow_caster_draws(&items);
+
+    assert!(
+        Arc::ptr_eq(&items, &casters),
+        "an all-casting view must not deep clone every draw item"
+    );
+}
+
+#[test]
+fn caster_filter_drops_non_casting_draws() {
+    let items: WorldMeshDrawList = vec![
+        pbs_draw(1, ShadowCastMode::On),
+        pbs_draw(2, ShadowCastMode::Off),
+        pbs_draw(3, ShadowCastMode::On),
+    ]
+    .into();
+
+    let casters = super::filter_shadow_caster_draws(&items);
+
+    assert!(!Arc::ptr_eq(&items, &casters));
+    assert_eq!(casters.len(), 2);
+    assert!(
+        casters
+            .iter()
+            .all(|item| item.shadow_cast_mode != ShadowCastMode::Off)
+    );
+}
+
+#[test]
+fn hidden_instances_inside_a_visible_group_are_dropped() {
+    // One visible copy used to retain every copy, which is what pins 65k casters in every cascade.
+    let set = caster_set_of(vec![
+        placed_caster(1, true),
+        placed_caster(2, true),
+        placed_caster(3, false),
+        placed_caster(4, false),
+        placed_caster(5, true),
+    ]);
+
+    assert_eq!(
+        set.instance_plan.phase(WorldMeshPhase::ForwardOpaque).len(),
+        1,
+        "the fixture must produce a single instance group for the split to be meaningful"
+    );
+    assert_eq!(visible_ranges(&set), vec![0..2, 4..5]);
+}
+
+#[test]
+fn fully_hidden_group_is_dropped_entirely() {
+    let set = caster_set_of(vec![placed_caster(1, false), placed_caster(2, false)]);
+
+    assert!(visible_ranges(&set).is_empty());
+}
+
+#[test]
+fn fully_visible_group_stays_one_draw() {
+    let set = caster_set_of(vec![
+        placed_caster(1, true),
+        placed_caster(2, true),
+        placed_caster(3, true),
+    ]);
+
+    assert_eq!(
+        visible_ranges(&set),
+        vec![0..3],
+        "an unsplit group must not be fragmented"
+    );
+}
+
+#[test]
+fn scattered_visibility_falls_back_to_the_whole_group() {
+    // Past the run limit the fragments cost more draw calls than the instances they skip, so the
+    // conservative whole group is the cheaper answer. Drawing an unseen caster is slow, not wrong.
+    let count = (super::SHADOW_SUBRANGE_RUN_LIMIT + 1) * 2;
+    let draws = (0..count)
+        .map(|i| placed_caster(i as i32, i % 2 == 0))
+        .collect::<Vec<_>>();
+    let set = caster_set_of(draws);
+
+    assert_eq!(visible_ranges(&set), vec![0..count as u32]);
+}
+
+#[test]
+fn split_subranges_keep_the_static_dynamic_partition() {
+    // Recording partitions visible groups at a single point, so every static sub-range must still
+    // sort before the dynamic suffix or "redraw only the dynamic half" drops static geometry.
+    let mut skinned = placed_caster(9, true);
+    skinned.skinned = true;
+    let set = caster_set_of(vec![
+        placed_caster(1, true),
+        placed_caster(2, false),
+        placed_caster(3, true),
+        skinned,
+    ]);
+
+    let build = super::visible_shadow_groups_for_view(glam::Mat4::IDENTITY, &set);
+    let items = build
+        .lease
+        .groups
+        .phase(WorldMeshPhase::ForwardOpaque)
+        .items();
+
+    assert_eq!(
+        items.len(),
+        3,
+        "two static sub-ranges plus the dynamic singleton"
+    );
+    assert_eq!(
+        items.partition_point(|group| !set.group_is_dynamic(group)),
+        items.len() - 1,
+        "the dynamic caster must remain a single trailing partition"
+    );
+    assert_eq!(build.lease.visible_group_draw_count, 3);
+}
+
 #[test]
 fn dynamic_casters_sort_last_and_no_group_straddles_the_boundary() {
     // The whole static/dynamic shadow split rests on this: if a group could contain both a skinned
@@ -656,7 +824,10 @@ fn dynamic_casters_sort_last_and_no_group_straddles_the_boundary() {
 
 #[test]
 fn caster_set_without_dynamic_draws_reports_an_empty_dynamic_suffix() {
-    let draws = vec![pbs_draw(1, ShadowCastMode::On), pbs_draw(2, ShadowCastMode::On)];
+    let draws = vec![
+        pbs_draw(1, ShadowCastMode::On),
+        pbs_draw(2, ShadowCastMode::On),
+    ];
 
     let plan = super::build_shadow_caster_plan(&draws, true);
 

@@ -1,12 +1,18 @@
 use super::assignment::{LightCookieAssignment, LightCookieAtlasState, POINT_COOKIE_RECT_BASE};
-use super::atlas::white_texture_bytes;
+use super::atlas::{LightCookieAtlasExtent, white_texture_bytes};
 use super::blit::LIGHT_COOKIE_BLIT_2D_STEM;
 use super::format::{
     LightCookieAtlasFormat, LightCookieSourceChannel, LightCookieSourceSampling,
     light_cookie_atlas_format_supported, light_cookie_wrap_bits, select_light_cookie_atlas_format,
     source_channel_for_host_format, source_sampling_for_limits,
 };
-use super::packing::{LightCookieAtlasRect, LightCookiePackItem, pack_light_cookie_rects};
+use super::packing::{
+    LightCookieAtlasRect, LightCookiePackItem, LightCookiePackedRect, pack_light_cookie_rects,
+};
+use super::resources::{
+    LightCookieEncodeState, PointCookieAtlasSignature, PointCookieSourceSignature,
+    retain_active_source_bind_group_rows,
+};
 use crate::assets::texture::HostTextureAssetKind;
 use crate::gpu::{
     GpuLimits, LIGHT_COOKIE_KIND_DIRECTIONAL_2D, LIGHT_COOKIE_WRAP_MODE_CLAMP,
@@ -319,6 +325,217 @@ fn assigns_point_cookies_to_disjoint_rect_range() {
     assert!(two_d.is_empty());
     assert_eq!(point.len(), 1);
     assert_eq!(point[0].layer, POINT_COOKIE_RECT_BASE);
+}
+
+#[test]
+fn point_atlas_signature_is_canonical_across_request_order() {
+    let first = point_source_signature(POINT_COOKIE_RECT_BASE, 9, 3, 7);
+    let second = point_source_signature(POINT_COOKIE_RECT_BASE + 6, 12, 5, 11);
+    let first_rect = point_cookie_packed_rect(POINT_COOKIE_RECT_BASE, 0);
+    let second_rect = point_cookie_packed_rect(POINT_COOKIE_RECT_BASE + 6, 64);
+
+    let forward = PointCookieAtlasSignature::new(
+        LightCookieAtlasExtent {
+            width: 128,
+            height: 64,
+        },
+        vec![first_rect, second_rect],
+        vec![first, second],
+    );
+    let reversed = PointCookieAtlasSignature::new(
+        LightCookieAtlasExtent {
+            width: 128,
+            height: 64,
+        },
+        vec![second_rect, first_rect],
+        vec![second, first],
+    );
+
+    assert_eq!(forward, reversed);
+}
+
+#[test]
+fn point_atlas_signature_invalidates_every_gpu_visible_change() {
+    let source = point_source_signature(POINT_COOKIE_RECT_BASE, 9, 3, 7);
+    let base = test_point_atlas_signature(
+        LightCookieAtlasExtent {
+            width: 64,
+            height: 64,
+        },
+        point_cookie_packed_rect(POINT_COOKIE_RECT_BASE, 0),
+        source,
+    );
+
+    let mut changed = source;
+    changed.content_generation += 1;
+    assert_ne!(
+        base,
+        test_point_atlas_signature(
+            LightCookieAtlasExtent {
+                width: 64,
+                height: 64,
+            },
+            point_cookie_packed_rect(POINT_COOKIE_RECT_BASE, 0),
+            changed,
+        )
+    );
+    changed = source;
+    changed.allocation_generation += 1;
+    assert_ne!(
+        base,
+        test_point_atlas_signature(
+            LightCookieAtlasExtent {
+                width: 64,
+                height: 64,
+            },
+            point_cookie_packed_rect(POINT_COOKIE_RECT_BASE, 0),
+            changed,
+        )
+    );
+    assert_ne!(
+        base,
+        test_point_atlas_signature(
+            LightCookieAtlasExtent {
+                width: 128,
+                height: 64,
+            },
+            point_cookie_packed_rect(POINT_COOKIE_RECT_BASE, 0),
+            source,
+        )
+    );
+    assert_ne!(
+        base,
+        test_point_atlas_signature(
+            LightCookieAtlasExtent {
+                width: 64,
+                height: 64,
+            },
+            point_cookie_packed_rect(POINT_COOKIE_RECT_BASE, 1),
+            source,
+        )
+    );
+    let added = PointCookieAtlasSignature::new(
+        LightCookieAtlasExtent {
+            width: 128,
+            height: 64,
+        },
+        vec![
+            point_cookie_packed_rect(POINT_COOKIE_RECT_BASE, 0),
+            point_cookie_packed_rect(POINT_COOKIE_RECT_BASE + 6, 64),
+        ],
+        vec![
+            source,
+            point_source_signature(POINT_COOKIE_RECT_BASE + 6, 12, 5, 11),
+        ],
+    )
+    .expect("two packed point cookies should produce a signature");
+    assert_ne!(base, added);
+}
+
+#[test]
+fn point_atlas_encode_state_reuses_static_content_but_keeps_2d_active() {
+    let signature = test_point_atlas_signature(
+        LightCookieAtlasExtent {
+            width: 64,
+            height: 64,
+        },
+        point_cookie_packed_rect(POINT_COOKIE_RECT_BASE, 0),
+        point_source_signature(POINT_COOKIE_RECT_BASE, 9, 3, 7),
+    );
+    let mut state = LightCookieEncodeState::default();
+
+    state.update(false, Some(signature.clone()));
+    assert!(state.should_record());
+    state.commit_point(&signature);
+    assert!(!state.should_record());
+
+    state.update(false, None);
+    assert!(!state.should_record());
+    state.update(false, Some(signature.clone()));
+    assert!(!state.should_record());
+
+    state.update(true, Some(signature));
+    assert!(state.should_record());
+}
+
+#[test]
+fn point_atlas_encode_state_rejects_stale_commit() {
+    let first = test_point_atlas_signature(
+        LightCookieAtlasExtent {
+            width: 64,
+            height: 64,
+        },
+        point_cookie_packed_rect(POINT_COOKIE_RECT_BASE, 0),
+        point_source_signature(POINT_COOKIE_RECT_BASE, 9, 3, 7),
+    );
+    let second = test_point_atlas_signature(
+        LightCookieAtlasExtent {
+            width: 64,
+            height: 64,
+        },
+        point_cookie_packed_rect(POINT_COOKIE_RECT_BASE, 0),
+        point_source_signature(POINT_COOKIE_RECT_BASE, 9, 3, 8),
+    );
+    let mut state = LightCookieEncodeState::default();
+
+    state.update(false, Some(second.clone()));
+    state.commit_point(&first);
+    assert!(state.should_record());
+    state.commit_point(&second);
+    assert!(!state.should_record());
+}
+
+#[test]
+fn source_bind_group_cache_prunes_inactive_and_out_of_range_rows() {
+    let mut cache = HashMap::from([(1, "first"), (7, "active"), (63, "last"), (999, "invalid")]);
+
+    retain_active_source_bind_group_rows(&mut cache, [7, 63, 2048]);
+
+    assert_eq!(cache.len(), 2);
+    assert_eq!(cache.get(&7), Some(&"active"));
+    assert_eq!(cache.get(&63), Some(&"last"));
+    retain_active_source_bind_group_rows(&mut cache, []);
+    assert!(cache.is_empty());
+}
+
+fn point_source_signature(
+    layer: u32,
+    asset_id: i32,
+    allocation_generation: u64,
+    content_generation: u64,
+) -> PointCookieSourceSignature {
+    PointCookieSourceSignature {
+        packed_id: asset_id,
+        asset_id,
+        layer,
+        allocation_generation,
+        content_generation,
+        mip_levels_resident: 1,
+        size: 64,
+        channel: LightCookieSourceChannel::Red,
+        sampling: LightCookieSourceSampling::Filtering,
+    }
+}
+
+fn point_cookie_packed_rect(rect_index: u32, x: u32) -> LightCookiePackedRect {
+    LightCookiePackedRect {
+        rect_index,
+        rect: LightCookieAtlasRect {
+            x,
+            y: 0,
+            width: 64,
+            height: 64,
+        },
+    }
+}
+
+fn test_point_atlas_signature(
+    extent: LightCookieAtlasExtent,
+    rect: LightCookiePackedRect,
+    source: PointCookieSourceSignature,
+) -> PointCookieAtlasSignature {
+    PointCookieAtlasSignature::new(extent, vec![rect], vec![source])
+        .expect("one packed point-cookie rect should produce a signature")
 }
 
 fn limits_with_format(

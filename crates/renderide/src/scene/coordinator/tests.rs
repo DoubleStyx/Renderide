@@ -144,6 +144,48 @@ impl SceneCoordinator {
             });
     }
 
+    /// Appends one single-LOD group naming `instance_ids` to a seeded space (unit tests only).
+    pub(crate) fn test_push_lod_group(
+        &mut self,
+        id: RenderSpaceId,
+        node_id: i32,
+        screen_relative_transition_height: f32,
+        instance_ids: impl IntoIterator<Item = crate::scene::MeshRendererInstanceId>,
+    ) {
+        use crate::scene::lod_groups::{LodEntry, LodGroupEntry, LodRendererKind, LodRendererRef};
+        let space = self.spaces.get_mut(&id).expect("seeded space");
+        space.lod_groups.push(LodGroupEntry {
+            node_id,
+            lods: vec![LodEntry {
+                screen_relative_transition_height,
+                fade_transition_width: 0.0,
+                renderers: instance_ids
+                    .into_iter()
+                    .map(|instance_id| LodRendererRef {
+                        kind: LodRendererKind::Static,
+                        instance_id,
+                        renderable_index_hint: 0,
+                    })
+                    .collect(),
+            }],
+            ..Default::default()
+        });
+    }
+
+    /// Drops every LOD group from a seeded render space (unit tests only).
+    pub(crate) fn test_clear_lod_groups(&mut self, id: RenderSpaceId) {
+        let space = self.spaces.get_mut(&id).expect("seeded space");
+        space.lod_groups.clear();
+        // Every LOD mutation announces itself; a helper that skips this hides a real staleness bug.
+        space.lod_generation = space.lod_generation.wrapping_add(1);
+    }
+
+    /// Drops every material-slot override from a seeded render space (unit tests only).
+    pub(crate) fn test_clear_material_overrides(&mut self, id: RenderSpaceId) {
+        let space = self.spaces.get_mut(&id).expect("seeded space");
+        space.render_material_overrides.clear();
+    }
+
     /// Appends PhotonDust billboard renderer rows to a seeded render space (unit tests only).
     pub(crate) fn test_push_billboard_render_buffers(
         &mut self,

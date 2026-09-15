@@ -505,11 +505,16 @@ impl FrameResourceManager {
     }
 
     /// Copies the main depth attachment into this view's scene-depth snapshot.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the copy entry point mirrors the graph resource interface and wgpu encode inputs"
+    )]
     pub fn copy_scene_depth_snapshot_for_view(
         &self,
         device: &wgpu::Device,
         view_id: ViewId,
         encoder: &mut wgpu::CommandEncoder,
+        profiler: Option<&crate::profiling::GpuProfilerHandle>,
         source_depth: &wgpu::Texture,
         viewport: (u32, u32),
         multiview: bool,
@@ -518,9 +523,14 @@ impl FrameResourceManager {
             logger::warn!("scene depth snapshot copy: missing per-view frame for {view_id:?}");
             return false;
         };
-        state
-            .scene_snapshots
-            .encode_depth_copy(device, encoder, source_depth, viewport, multiview)
+        state.scene_snapshots.encode_depth_copy(
+            device,
+            encoder,
+            profiler,
+            source_depth,
+            viewport,
+            multiview,
+        )
     }
 
     /// Copies the main color attachment into this view's scene-color snapshot.

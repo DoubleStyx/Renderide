@@ -471,9 +471,9 @@ impl CompiledRenderGraph {
 
     /// Runs the mutable-borrow half of split frame-global recording.
     ///
-    /// Resolves the anchor view and transients, records the serial before-split range, and packs
-    /// split-pass uploads. The returned stage holds no borrows, so the chunk fan-out can run
-    /// against shared borrows while per-view recording proceeds on other workers.
+    /// Resolves the anchor/transients and serial prefix, then packs split uploads. The returned
+    /// stage holds no borrows, so fan-out can overlap per-view recording on other workers.
+    #[expect(clippy::too_many_lines, reason = "ordered split-recording transaction")]
     pub(in crate::render_graph::compiled::exec) fn prepare_frame_global_split_stage(
         &self,
         mv_ctx: &mut MultiViewExecutionContext<'_>,
@@ -598,10 +598,15 @@ impl CompiledRenderGraph {
     }
 
     /// Records the split-pass chunk fan-out for a prepared stage using shared borrows only.
+    /// `pass_profiler` is shared with the concurrent per-view branch rather than owned. The handle
+    /// allocates queries through `&self`, so both halves of the recording join can time their
+    /// passes. Without it the whole frame-global half (shadow atlas layers above all) recorded no
+    /// GPU timestamps at all and was invisible in a `tracy-gpu` capture. -xlinka
     pub(in crate::render_graph::compiled::exec) fn record_frame_global_split_stage_commands(
         &self,
         stage: &FrameGlobalSplitStage,
         shared: &FrameGlobalSplitEncodeShared<'_>,
+        pass_profiler: Option<&crate::profiling::GpuProfilerHandle>,
     ) -> Result<Vec<TimedCommandBuffer>, GraphExecuteError> {
         if !stage.prepared {
             return Ok(Vec::new());
@@ -610,7 +615,7 @@ impl CompiledRenderGraph {
             stage.candidate.resource_pass,
             stage.candidate.workload,
             shared,
-            None,
+            pass_profiler,
         )
     }
 

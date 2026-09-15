@@ -25,8 +25,8 @@ use crate::world_mesh::draw_prep::{
 use crate::world_mesh::instances::InstancePlanBuildScratch;
 use crate::world_mesh::{
     DrawGroup, HiZTemporalState, InstancePlan, PrefetchedWorldMeshViewDraws,
-    WorldMeshCullProjParams, WorldMeshHelperNeeds, WorldMeshPhase, state_rows_from_sorted,
-    stats_from_sorted, stats_from_sorted_with_plan,
+    WorldMeshCullProjParams, WorldMeshDrawList, WorldMeshHelperNeeds, WorldMeshPhase,
+    state_rows_from_sorted, stats_from_sorted, stats_from_sorted_with_plan,
 };
 
 use super::camera::{compute_view_projections, resolve_pass_config};
@@ -42,8 +42,11 @@ use super::{
 };
 
 mod cache;
+mod packed;
+mod profile;
 
 pub(crate) use cache::{WorldMeshForwardInstancePlanCache, WorldMeshForwardInstancePlanCacheStats};
+use packed::PackedForwardDraws;
 
 /// Prepared world-mesh forward state plus deferred per-view HUD output.
 pub(crate) struct PreparedWorldMeshForwardView {
@@ -97,13 +100,6 @@ pub(crate) struct WorldMeshForwardPrepareInputs<'a, 'frame> {
     pub(crate) view: WorldMeshForwardPrepareView<'a, 'frame>,
     /// Backend-owned retained caches.
     pub(crate) caches: WorldMeshForwardPrepareCaches<'a>,
-}
-
-struct PackedForwardDraws {
-    draws: Arc<[WorldMeshDrawItem]>,
-    plan: Arc<InstancePlan>,
-    overlay_view_proj: glam::Mat4,
-    precomputed_batches: Vec<MaterialBatchPacket>,
 }
 
 struct ForwardViewFinalizeInputs {
@@ -273,6 +269,7 @@ pub(super) fn maybe_set_world_mesh_draw_stats(
 }
 
 /// Prepares forward draws and uploads per-view data.
+#[expect(clippy::too_many_lines, reason = "linear preparation")]
 pub(crate) fn prepare_world_mesh_forward_frame(
     inputs: WorldMeshForwardPrepareInputs<'_, '_>,
     prefetched: PrefetchedWorldMeshViewDraws,
@@ -476,7 +473,7 @@ fn update_world_mesh_draw_stats_from_plan(
 
 fn pack_forward_draws_for_view(
     inputs: ForwardDrawPackInputs<'_, '_>,
-    draws: Arc<[WorldMeshDrawItem]>,
+    draws: WorldMeshDrawList,
     scratch: &mut WorldMeshForwardPrepareScratch,
 ) -> Option<PackedForwardDraws> {
     let ForwardDrawPackInputs {
@@ -547,6 +544,7 @@ fn pack_forward_draws_for_view(
         precomputed_batches.len(),
         plan.primary_forward_group_count(),
     );
+    profile::plot_instance_plan_cache(instance_plan_cache);
     let slab_uploaded = {
         profiling::scope!("world_mesh::prepare_frame::pack_and_upload_slab");
         pack_and_upload_per_draw_slab(

@@ -152,6 +152,7 @@ pub(in crate::scene::coordinator) fn note_render_world_dirty_for_extracted_updat
     report.note_render_world_classified_space(space_id);
     if header_dirty {
         report.render_world_dirty.note_full_space(space_id);
+        report.note_full_space_reason(0);
     }
     if let Some(ref transforms) = update.transforms {
         note_transform_update_render_world_dirty(
@@ -175,6 +176,7 @@ pub(in crate::scene::coordinator) fn note_render_world_dirty_for_extracted_updat
     }
     if update.layers.as_ref().is_some_and(layer_update_has_work) {
         report.render_world_dirty.note_full_space(space_id);
+        report.note_full_space_reason(1);
     }
     if let Some(transform_overrides) = update
         .transform_overrides
@@ -193,7 +195,7 @@ pub(in crate::scene::coordinator) fn note_render_world_dirty_for_extracted_updat
         .as_ref()
         .is_some_and(lod_group_update_has_work)
     {
-        report.render_world_dirty.note_full_space(space_id);
+        report.render_world_dirty.note_lod_space(space_id);
     }
     if let Some(update) = update
         .billboard_render_buffers
@@ -386,9 +388,37 @@ fn note_static_mesh_update_render_world_dirty(
     current_space: Option<&RenderSpaceState>,
     update: &super::super::meshes::ExtractedMeshRenderablesUpdate,
 ) {
-    if has_active_dense_indices(&update.removals) || has_active_dense_indices(&update.additions) {
+    // Removals use `swap_remove`, which relocates the tail row into the freed slot and invalidates
+    // that renderer's dense index. Nothing short of a full-space refresh can repair that.
+    if has_active_dense_indices(&update.removals) {
         report.render_world_dirty.note_full_space(space_id);
+        report.note_full_space_reason(3);
         return;
+    }
+    // Additions only PUSH onto the dense tail, so every existing index survives untouched. This
+    // classification runs in Phase A against the pre-mutation space, so the appended rows land at
+    // `len..len + additions`. Escalating these to a full space re-expanded every renderer in the
+    // space and forced a snapshot rebuild, measured at 15.5ms + 17.5ms in Darkcity4.tracy. -xlinka
+    if has_active_dense_indices(&update.additions) {
+        let Some(space) = current_space else {
+            // No retained space to append onto: there is no base index to derive.
+            report.render_world_dirty.note_full_space(space_id);
+            report.note_full_space_reason(3);
+            return;
+        };
+        let base = space.static_mesh_renderers.len();
+        for (offset, _) in update
+            .additions
+            .iter()
+            .take_while(|&&node_id| node_id >= 0)
+            .enumerate()
+        {
+            report.render_world_dirty.note_renderer(
+                space_id,
+                RenderWorldRendererKind::Static,
+                base.saturating_add(offset),
+            );
+        }
     }
 
     let packed = update.mesh_materials_and_property_blocks.as_deref();
@@ -526,6 +556,7 @@ fn note_skinned_mesh_update_render_world_dirty(
         || has_active_dense_indices(&skinned_meshes.additions)
     {
         report.render_world_dirty.note_full_space(space_id);
+        report.note_full_space_reason(4);
         return;
     }
 
@@ -608,9 +639,7 @@ fn note_changed_skinned_bone_plans(
         if target_is_valid {
             let root = (assignment.root_bone_transform_id >= 0)
                 .then_some(assignment.root_bone_transform_id);
-            if bone_count == 0 {
-                plans.insert(renderable_index, ClassifiedBonePlan { root });
-            } else if end <= update.bone_transform_indexes.len() {
+            if bone_count == 0 || end <= update.bone_transform_indexes.len() {
                 plans.insert(renderable_index, ClassifiedBonePlan { root });
             }
         }
@@ -791,6 +820,7 @@ fn note_transform_update_render_world_dirty(
             && transforms.target_transform_count as usize != current_node_count)
     {
         report.render_world_dirty.note_full_space(space_id);
+        report.note_full_space_reason(5);
         return;
     }
     let pose_roots = transforms

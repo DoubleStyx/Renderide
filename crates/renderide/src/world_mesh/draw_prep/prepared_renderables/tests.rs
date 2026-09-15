@@ -314,6 +314,28 @@ fn renderer_ordinals_follow_static_scene_table_even_when_rows_emit_no_draws() {
 }
 
 #[test]
+fn generated_renderer_ordinals_do_not_alias_scene_lod_bits() {
+    let space_id = RenderSpaceId(10);
+    let mut scene = empty_scene();
+    scene.test_insert_skinned_mesh_renderers(space_id, vec![SkinnedMeshRenderer::default()]);
+    scene.test_set_static_mesh_renderers(
+        space_id,
+        vec![StaticMeshRenderer::default(), StaticMeshRenderer::default()],
+    );
+    let mut static_draw = prepared_draw(0, 7, None);
+    static_draw.space_id = space_id;
+    let mut particle_draw = prepared_draw(0, 7, None);
+    particle_draw.space_id = space_id;
+    particle_draw.particle_draw.kind = ParticleDrawKind::Billboard;
+    let mut draws = vec![static_draw, particle_draw];
+
+    populate_renderer_ordinals_from_scene(&mut draws, &scene);
+
+    assert_eq!(draws[0].renderer_ordinal, 0);
+    assert_eq!(draws[1].renderer_ordinal, 3);
+}
+
+#[test]
 fn spatial_query_uses_bvh_for_large_spaces_and_filters_frustum() {
     let space_id = RenderSpaceId(1);
     let (scene, host_camera, proj) = spatial_scene_and_cull(space_id);
@@ -627,6 +649,15 @@ fn mesh_renderer_patch_updates_stable_range_without_moving_runs_or_lookups() {
 }
 
 #[test]
+fn overlay_transition_is_not_a_stable_prepared_patch_shape() {
+    let old = prepared_draw_with_bounds(0, Vec3::splat(-0.5), Vec3::splat(0.5));
+    let mut overlay = old.clone();
+    overlay.is_overlay = true;
+
+    assert!(!prepared_patch_shape_is_stable(&[old], &[overlay]));
+}
+
+#[test]
 fn mesh_renderer_patch_structural_fallback_rebuilds_ranges_and_remains_patchable() {
     let (mut scene, mesh_pool, space_id) = patchable_static_scene();
     let render_context = RenderingContext::UserView;
@@ -667,6 +698,139 @@ fn mesh_renderer_patch_structural_fallback_rebuilds_ranges_and_remains_patchable
     assert!(!second.changed);
 }
 
+/// Prepared snapshot over one static renderer that a single scene LOD group names.
+fn prepared_with_scene_lod_group(
+    space_id: RenderSpaceId,
+    min: Vec3,
+    max: Vec3,
+) -> (SceneCoordinator, FramePreparedRenderables) {
+    let instance_id = MeshRendererInstanceId(1);
+    let mut scene = SceneCoordinator::new();
+    scene.test_seed_space_identity_worlds(space_id, vec![RenderTransform::default()], vec![-1]);
+    scene.test_push_lod_group(space_id, 0, 0.5, [instance_id]);
+    let mut draw = prepared_draw_with_bounds(0, min, max);
+    draw.instance_id = instance_id;
+    let mut prepared = prepared_from_space_draws(space_id, &[draw]);
+    prepared.rebuild_lod_groups(Some(&scene));
+    (scene, prepared)
+}
+
+#[test]
+fn bounds_refit_refreshes_lod_group_aabb_without_rebuilding_membership() {
+    let space_id = RenderSpaceId(11);
+    let (scene, mut prepared) =
+        prepared_with_scene_lod_group(space_id, Vec3::splat(-1.0), Vec3::splat(1.0));
+    assert_eq!(prepared.lod_groups.len(), 1);
+    assert_eq!(
+        prepared.lod_groups[0].world_aabb,
+        Some((Vec3::splat(-1.0), Vec3::splat(1.0)))
+    );
+    let membership = prepared.lod_groups[0].lods.clone();
+
+    // Move the renderer the way a transform-only patch would.
+    prepared.draws[0].cull_geometry = Some(MeshCullGeometry {
+        world_aabb: Some((Vec3::splat(4.0), Vec3::splat(6.0))),
+        rigid_world_matrix: Some(Mat4::IDENTITY),
+        front_face_world_matrix: Some(Mat4::IDENTITY),
+    });
+    prepared.refit_cached_spatial_and_lods_for_spaces(&scene, [space_id]);
+
+    assert_eq!(
+        prepared.lod_groups[0].world_aabb,
+        Some((Vec3::splat(4.0), Vec3::splat(6.0))),
+        "the cached group bounds must follow the moved renderer"
+    );
+    assert_eq!(
+        prepared.lod_groups[0].lods, membership,
+        "a bounds refit must not disturb resolved LOD membership"
+    );
+}
+
+#[test]
+fn lod_bounds_refit_ignores_particle_ordinal_collisions() {
+    let space_id = RenderSpaceId(15);
+    let (scene, mut prepared) =
+        prepared_with_scene_lod_group(space_id, Vec3::splat(-1.0), Vec3::splat(1.0));
+    let mut particle = prepared_draw_with_bounds(0, Vec3::splat(100.0), Vec3::splat(200.0));
+    particle.space_id = space_id;
+    particle.instance_id = MeshRendererInstanceId(999);
+    particle.renderer_ordinal = 0;
+    particle.particle_draw.kind = ParticleDrawKind::Billboard;
+    let particle_start = prepared.draws.len() as u32;
+    prepared.draws.push(particle);
+    prepared.runs.push(FramePreparedRun {
+        start: particle_start,
+        end: particle_start + 1,
+    });
+    prepared.rebuild_lod_groups(Some(&scene));
+
+    prepared.draws[0].cull_geometry = Some(MeshCullGeometry {
+        world_aabb: Some((Vec3::splat(4.0), Vec3::splat(6.0))),
+        rigid_world_matrix: Some(Mat4::IDENTITY),
+        front_face_world_matrix: Some(Mat4::IDENTITY),
+    });
+    prepared.refit_cached_spatial_and_lods_for_spaces(&scene, [space_id]);
+
+    assert_eq!(
+        prepared.lod_groups[0].world_aabb,
+        Some((Vec3::splat(4.0), Vec3::splat(6.0)))
+    );
+}
+
+#[test]
+fn a_bounds_refit_only_touches_the_spaces_it_was_given() {
+    // The LOD bounds pass used to walk every run and every group in every space on each call, and
+    // it runs about six times a frame for roughly one dirty renderer. Scoping it must still refresh
+    // the named space exactly, and must leave other spaces' cached bounds alone.
+    let space_id = RenderSpaceId(13);
+    let (scene, mut prepared) =
+        prepared_with_scene_lod_group(space_id, Vec3::splat(-1.0), Vec3::splat(1.0));
+    let untouched = RenderSpaceId(14);
+    prepared.lod_groups.push(FramePreparedLodGroup {
+        space_id: untouched,
+        scene_group_index: 0,
+        any_overlay: false,
+        world_aabb: Some((Vec3::splat(-7.0), Vec3::splat(7.0))),
+        lods: Vec::new(),
+    });
+
+    prepared.draws[0].cull_geometry = Some(MeshCullGeometry {
+        world_aabb: Some((Vec3::splat(4.0), Vec3::splat(6.0))),
+        rigid_world_matrix: Some(Mat4::IDENTITY),
+        front_face_world_matrix: Some(Mat4::IDENTITY),
+    });
+    prepared.refit_cached_spatial_and_lods_for_spaces(&scene, [space_id]);
+
+    assert_eq!(
+        prepared.lod_groups[0].world_aabb,
+        Some((Vec3::splat(4.0), Vec3::splat(6.0))),
+        "the named space must still follow its moved renderer"
+    );
+    assert_eq!(
+        prepared.lod_groups[1].world_aabb,
+        Some((Vec3::splat(-7.0), Vec3::splat(7.0))),
+        "a space that was not refit must keep its cached bounds"
+    );
+}
+
+#[test]
+fn changed_scene_lod_rows_still_force_a_membership_rebuild_on_refit() {
+    // The fast path is only legal while the scene's LOD rows are byte-identical. If a group gains
+    // or loses a renderer, refreshing bounds alone would leave membership permanently stale.
+    let space_id = RenderSpaceId(12);
+    let (mut scene, mut prepared) =
+        prepared_with_scene_lod_group(space_id, Vec3::splat(-1.0), Vec3::splat(1.0));
+    assert_eq!(prepared.lod_groups.len(), 1);
+
+    scene.test_clear_lod_groups(space_id);
+    prepared.refit_cached_spatial_and_lods_for_spaces(&scene, [space_id]);
+
+    assert!(
+        prepared.lod_groups.is_empty(),
+        "dropping the scene LOD group must drop the prepared group, not preserve it"
+    );
+}
+
 #[test]
 fn scene_aware_spatial_refit_rebuilds_stale_lod_metadata() {
     let space_id = RenderSpaceId(1);
@@ -693,4 +857,298 @@ fn scene_aware_spatial_refit_rebuilds_stale_lod_metadata() {
         prepared.lod_groups.is_empty(),
         "scene-aware maintenance must rebuild rather than preserve stale cached LOD metadata"
     );
+}
+
+#[test]
+fn spatial_lod_refit_batch_coalesces_spaces_and_restores_eager_behavior() {
+    let first_space = RenderSpaceId(21);
+    let second_space = RenderSpaceId(22);
+    let mut first_draw = prepared_draw_with_bounds(0, Vec3::splat(-1.0), Vec3::splat(1.0));
+    first_draw.space_id = first_space;
+    let mut second_draw = prepared_draw_with_bounds(0, Vec3::splat(-2.0), Vec3::splat(2.0));
+    second_draw.space_id = second_space;
+    let first_draws = [first_draw];
+    let second_draws = [second_draw];
+    let mut prepared = FramePreparedRenderables::empty(RenderingContext::UserView);
+    prepared.rebuild_from_cached_spaces(
+        RenderingContext::UserView,
+        [
+            (first_space, first_draws.as_slice()),
+            (second_space, second_draws.as_slice()),
+        ],
+    );
+    let scene = empty_scene();
+
+    prepared.begin_spatial_lod_refit_batch();
+    assert_eq!(
+        prepared.refit_cached_spatial_and_lods_for_spaces(&scene, [first_space]),
+        0,
+        "batched calls must queue work instead of refitting intermediate rows"
+    );
+    assert_eq!(
+        prepared.refit_cached_spatial_and_lods_for_spaces(&scene, [first_space, second_space]),
+        0
+    );
+    assert_eq!(
+        prepared.flush_spatial_lod_refit_batch(&scene),
+        2,
+        "the flush must refit the union, not count the repeated first space twice"
+    );
+
+    assert_eq!(
+        prepared.refit_cached_spatial_and_lods_for_spaces(&scene, [first_space]),
+        1,
+        "direct callers outside a top-level batch must retain eager behavior"
+    );
+}
+
+#[test]
+fn structural_metadata_rebuild_discards_queued_stable_refits() {
+    let space_id = RenderSpaceId(23);
+    let mut draw = prepared_draw_with_bounds(0, Vec3::splat(-1.0), Vec3::splat(1.0));
+    draw.space_id = space_id;
+    let draws = [draw];
+    let mut prepared = prepared_from_space_draws(space_id, &draws);
+    let scene = empty_scene();
+
+    prepared.begin_spatial_lod_refit_batch();
+    assert_eq!(
+        prepared.refit_cached_spatial_and_lods_for_spaces(&scene, [space_id]),
+        0
+    );
+    prepared.rebuild_from_cached_spaces(RenderingContext::UserView, [(space_id, draws.as_slice())]);
+
+    assert_eq!(
+        prepared.flush_spatial_lod_refit_batch(&scene),
+        0,
+        "the full metadata rebuild already refreshed spatial and LOD state"
+    );
+}
+
+#[test]
+fn a_bounds_refit_skips_the_run_scan_when_no_lod_group_is_involved() {
+    // Refreshing group bounds costs a full run scan of the touched space. Most renderers belong to
+    // no LOD group, and in a single-space city world that scan is ~37k runs for a one-renderer
+    // patch, so a space with no LOD members must not pay it.
+    let space_id = RenderSpaceId(21);
+    let mut prepared = prepared_from_space_draws(
+        space_id,
+        &[prepared_draw_with_bounds(
+            0,
+            Vec3::splat(-1.0),
+            Vec3::splat(1.0),
+        )],
+    );
+    prepared.lod_groups.push(FramePreparedLodGroup {
+        space_id,
+        scene_group_index: 0,
+        any_overlay: false,
+        world_aabb: Some((Vec3::splat(-5.0), Vec3::splat(5.0))),
+        lods: Vec::new(),
+    });
+
+    prepared.draws[0].cull_geometry = Some(MeshCullGeometry {
+        world_aabb: Some((Vec3::splat(8.0), Vec3::splat(9.0))),
+        rigid_world_matrix: Some(Mat4::IDENTITY),
+        front_face_world_matrix: Some(Mat4::IDENTITY),
+    });
+    prepared.refit_cached_spatial_and_lods_for_spaces(&empty_scene(), [space_id]);
+
+    assert_eq!(
+        prepared.lod_groups.len(),
+        0,
+        "an empty scene drops the stale group rather than refreshing it"
+    );
+}
+
+#[test]
+fn a_bounds_patch_names_its_runs_so_the_refit_stays_incremental() {
+    // Bounds patches are the highest-frequency operation in a live world (41.76 dirty renderers per
+    // frame in Darkcity6) and they never move rows. Naming the touched runs is what keeps the
+    // spatial refit off its O(scene) sweep, so the accumulation must survive to the refit call.
+    let space_id = RenderSpaceId(31);
+    let draws = (0..4)
+        .map(|idx| prepared_draw_with_bounds(idx, Vec3::splat(-1.0), Vec3::splat(1.0)))
+        .collect::<Vec<_>>();
+    let mut prepared = prepared_from_space_draws(space_id, &draws);
+
+    prepared.update_cached_renderer_cull_geometry(
+        space_id,
+        false,
+        2,
+        MeshRendererInstanceId(3),
+        Some(MeshCullGeometry {
+            world_aabb: Some((Vec3::splat(5.0), Vec3::splat(6.0))),
+            rigid_world_matrix: Some(Mat4::IDENTITY),
+            front_face_world_matrix: Some(Mat4::IDENTITY),
+        }),
+    );
+
+    assert!(
+        !prepared.pending_bounds_patch_runs.is_empty(),
+        "a bounds patch must record the runs it rewrote"
+    );
+    prepared.refit_cached_spatial_and_lods_for_spaces(&empty_scene(), [space_id]);
+    assert!(
+        prepared.pending_bounds_patch_runs.is_empty(),
+        "the refit must consume the pending runs so they cannot leak into a later frame"
+    );
+}
+
+#[test]
+fn only_lod_groups_owning_a_changed_renderer_are_recomputed() {
+    // Recomputing every group in a touched space stayed O(scene) in a city world where nearly every
+    // renderer is an LOD member. A group whose members did not move must keep its cached AABB
+    // untouched, which is what proves the reverse index is doing the scoping.
+    let space_id = RenderSpaceId(41);
+    let (scene, mut prepared) =
+        prepared_with_scene_lod_group(space_id, Vec3::splat(-1.0), Vec3::splat(1.0));
+    assert_eq!(prepared.lod_groups.len(), 1);
+    let untouched_aabb = Some((Vec3::splat(-77.0), Vec3::splat(77.0)));
+    prepared.lod_groups.push(FramePreparedLodGroup {
+        space_id,
+        scene_group_index: 1,
+        any_overlay: false,
+        world_aabb: untouched_aabb,
+        lods: Vec::new(),
+    });
+
+    // Go through the real bounds-patch API so the changed runs are recorded; poking `draws`
+    // directly leaves nothing named and correctly falls back to the conservative full recompute.
+    let instance_id = prepared.draws[0].instance_id;
+    prepared.update_cached_renderer_cull_geometry(
+        space_id,
+        false,
+        prepared.draws[0].renderable_index,
+        instance_id,
+        Some(MeshCullGeometry {
+            world_aabb: Some((Vec3::splat(4.0), Vec3::splat(6.0))),
+            rigid_world_matrix: Some(Mat4::IDENTITY),
+            front_face_world_matrix: Some(Mat4::IDENTITY),
+        }),
+    );
+    prepared.refit_cached_spatial_and_lods_for_spaces(&scene, [space_id]);
+
+    assert_eq!(
+        prepared.lod_groups[1].world_aabb, untouched_aabb,
+        "a group owning no changed renderer must keep its cached bounds"
+    );
+}
+
+#[test]
+fn the_insertion_point_binary_search_matches_a_linear_walk() {
+    // Rows in a space are ordered non-skinned(asc) -> skinned(asc) -> particles. If the binary
+    // search ever disagrees with that ordering a renderer is spliced into the wrong slot, which
+    // corrupts every cached range after it rather than failing loudly.
+    let space_id = RenderSpaceId(51);
+    let mut rows = Vec::new();
+    for idx in [0usize, 2, 5] {
+        rows.push(prepared_draw_with_bounds(idx, Vec3::splat(-1.0), Vec3::splat(1.0)));
+    }
+    for idx in [1usize, 4] {
+        let mut skinned = prepared_draw_with_bounds(idx, Vec3::splat(-1.0), Vec3::splat(1.0));
+        skinned.skinned = true;
+        rows.push(skinned);
+    }
+    let prepared = prepared_from_space_draws(space_id, &rows);
+    let range = prepared
+        .cached_space_draw_ranges
+        .get(&space_id)
+        .cloned()
+        .expect("space range");
+
+    for skinned in [false, true] {
+        for renderable_index in 0..8usize {
+            let expected = range
+                .clone()
+                .find(|&draw_index| {
+                    let draw = &prepared.draws[draw_index];
+                    if draw.particle_draw.kind != ParticleDrawKind::None {
+                        return true;
+                    }
+                    if skinned {
+                        draw.skinned && draw.renderable_index > renderable_index
+                    } else {
+                        draw.skinned || draw.renderable_index > renderable_index
+                    }
+                })
+                .unwrap_or(range.end);
+            let actual =
+                prepared.mesh_renderer_insertion_index(space_id, skinned, renderable_index);
+            assert_eq!(
+                actual, expected,
+                "insertion point diverged for skinned={skinned} index={renderable_index}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_prepared_draw_row_stays_within_its_memory_budget() {
+    // Every O(n) pass over prepared draws streams this struct. At 432 bytes and ~37k rows in a city
+    // world that is ~16MB per sweep, which is far past any cache and makes those loops bandwidth
+    // bound no matter how cheap the per-row work is. Two thirds of it is MeshCullGeometry (two
+    // Mat4s), which only culling reads. Growing this row makes every hot loop slower. -xlinka
+    assert!(
+        size_of::<FramePreparedDraw>() <= 432,
+        "prepared draw row grew to {} bytes",
+        size_of::<FramePreparedDraw>()
+    );
+    assert!(
+        size_of::<MeshCullGeometry>() <= 192,
+        "cull geometry grew to {} bytes",
+        size_of::<MeshCullGeometry>()
+    );
+    // The COLLECTED item is even larger and is what the hot paths move: shadow collection expands
+    // one per caster, `flatten_input` memcpys them, and `filter_casters` clones the whole list.
+    assert!(
+        size_of::<crate::world_mesh::draw_prep::WorldMeshDrawItem>() <= 448,
+        "collected draw item grew to {} bytes",
+        size_of::<crate::world_mesh::draw_prep::WorldMeshDrawItem>()
+    );
+}
+
+#[test]
+fn a_scoped_lod_rebuild_leaves_other_spaces_membership_intact() {
+    // A LOD update in one space rebuilt every group in every space, costing 7554us per call and
+    // firing 82 times during a world load. Spaces outside the set must keep their resolved
+    // membership, and the ordinal index must stay consistent with the shifted group indices.
+    let space_id = RenderSpaceId(61);
+    let (scene, mut prepared) =
+        prepared_with_scene_lod_group(space_id, Vec3::splat(-1.0), Vec3::splat(1.0));
+    let other = RenderSpaceId(62);
+    prepared.lod_groups.push(FramePreparedLodGroup {
+        space_id: other,
+        scene_group_index: 0,
+        any_overlay: false,
+        world_aabb: Some((Vec3::splat(-3.0), Vec3::splat(3.0))),
+        lods: Vec::new(),
+    });
+    let kept = prepared.lod_groups.len();
+
+    let only = [space_id].into_iter().collect::<HashSet<_>>();
+    prepared.rebuild_lod_groups_for_spaces(Some(&scene), Some(&only));
+
+    assert!(
+        prepared
+            .lod_groups
+            .iter()
+            .any(|group| group.space_id == other),
+        "a space outside the rebuild set must keep its groups"
+    );
+    assert_eq!(prepared.lod_groups.len(), kept, "no group should be lost");
+    for (index, group) in prepared.lod_groups.iter().enumerate() {
+        for lod in &group.lods {
+            for renderer in &lod.renderers {
+                let slots = prepared
+                    .lod_groups_by_ordinal
+                    .get(&(group.space_id, renderer.renderer_ordinal))
+                    .expect("member indexed");
+                assert!(
+                    slots.contains(&index),
+                    "ordinal index must point at the group's final position"
+                );
+            }
+        }
+    }
 }

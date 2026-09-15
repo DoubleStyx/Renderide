@@ -511,6 +511,84 @@ fn allocate_or_reuse_generated_buffer(
     try_create_generated_buffer(ctx, label, size, usage)
 }
 
+fn allocate_generated_point_derived_streams(
+    ctx: MeshGpuUploadContext<'_>,
+    asset_id: i32,
+    vertex_count: usize,
+    existing: Option<&GpuMesh>,
+    limits: GeneratedDerivedUploadLimits,
+) -> Option<DerivedStreams> {
+    let allocate = |existing: Option<&Arc<wgpu::Buffer>>,
+                    profile: DerivedBufferProfile,
+                    byte_len: usize,
+                    usage: wgpu::BufferUsages,
+                    max_size: u64| {
+        allocate_or_reuse_generated_buffer(
+            ctx,
+            existing,
+            &format!("mesh {asset_id} {}_stream", profile.label()),
+            byte_len,
+            usage,
+            max_size,
+        )
+    };
+    Some(DerivedStreams {
+        positions_buffer: Some(allocate(
+            existing.and_then(|mesh| mesh.positions_buffer.as_ref()),
+            DerivedBufferProfile::Positions,
+            vertex_count * 16,
+            limits.usages.primary,
+            limits.storage_size_limit,
+        )?),
+        normals_buffer: Some(allocate(
+            existing.and_then(|mesh| mesh.normals_buffer.as_ref()),
+            DerivedBufferProfile::Normals,
+            vertex_count * 16,
+            limits.usages.primary,
+            limits.storage_size_limit,
+        )?),
+        uv0_buffer: Some(allocate(
+            existing.and_then(|mesh| mesh.uv0_buffer.as_ref()),
+            DerivedBufferProfile::Uv0,
+            vertex_count * 8,
+            limits.usages.vertex,
+            limits.max_buffer_size,
+        )?),
+        color_buffer: Some(allocate(
+            existing.and_then(|mesh| mesh.color_buffer.as_ref()),
+            DerivedBufferProfile::Color,
+            vertex_count * 16,
+            limits.usages.vertex,
+            limits.max_buffer_size,
+        )?),
+        tangent_buffer: Some(allocate(
+            existing.and_then(|mesh| mesh.tangent_buffer.as_ref()),
+            DerivedBufferProfile::Tangent,
+            vertex_count * 16,
+            limits.usages.tangent,
+            limits.storage_size_limit,
+        )?),
+        raw_tangent_buffer: Some(allocate(
+            existing.and_then(|mesh| mesh.raw_tangent_buffer.as_ref()),
+            DerivedBufferProfile::RawTangent,
+            vertex_count * 16,
+            limits.usages.tangent,
+            limits.storage_size_limit,
+        )?),
+        uv1_buffer: Some(allocate(
+            existing.and_then(|mesh| mesh.uv1_buffer.as_ref()),
+            DerivedBufferProfile::Uv1,
+            vertex_count * 8,
+            limits.usages.vertex,
+            limits.max_buffer_size,
+        )?),
+        uv2_buffer: None,
+        uv3_buffer: None,
+        wide_low_uv_buffer: None,
+        wide_high_uv_buffer: None,
+    })
+}
+
 /// Allocates point-particle billboard buffers for GPU expansion.
 ///
 /// The fixed `capacity * 6` index count keeps a stable allocation from changing the draw item.
@@ -546,76 +624,7 @@ pub(crate) fn allocate_generated_point_mesh(
         limits.max_buffer_size,
     )?;
 
-    let alloc_derived = |existing: Option<&Arc<wgpu::Buffer>>,
-                         profile: DerivedBufferProfile,
-                         byte_len: usize,
-                         usage: wgpu::BufferUsages,
-                         max_size: u64|
-     -> Option<Arc<wgpu::Buffer>> {
-        allocate_or_reuse_generated_buffer(
-            ctx,
-            existing,
-            &format!("mesh {asset_id} {}_stream", profile.label()),
-            byte_len,
-            usage,
-            max_size,
-        )
-    };
-    let derived = DerivedStreams {
-        positions_buffer: Some(alloc_derived(
-            existing.and_then(|m| m.positions_buffer.as_ref()),
-            DerivedBufferProfile::Positions,
-            verts * 16,
-            limits.usages.primary,
-            limits.storage_size_limit,
-        )?),
-        normals_buffer: Some(alloc_derived(
-            existing.and_then(|m| m.normals_buffer.as_ref()),
-            DerivedBufferProfile::Normals,
-            verts * 16,
-            limits.usages.primary,
-            limits.storage_size_limit,
-        )?),
-        uv0_buffer: Some(alloc_derived(
-            existing.and_then(|m| m.uv0_buffer.as_ref()),
-            DerivedBufferProfile::Uv0,
-            verts * 8,
-            limits.usages.vertex,
-            limits.max_buffer_size,
-        )?),
-        color_buffer: Some(alloc_derived(
-            existing.and_then(|m| m.color_buffer.as_ref()),
-            DerivedBufferProfile::Color,
-            verts * 16,
-            limits.usages.vertex,
-            limits.max_buffer_size,
-        )?),
-        tangent_buffer: Some(alloc_derived(
-            existing.and_then(|m| m.tangent_buffer.as_ref()),
-            DerivedBufferProfile::Tangent,
-            verts * 16,
-            limits.usages.tangent,
-            limits.storage_size_limit,
-        )?),
-        raw_tangent_buffer: Some(alloc_derived(
-            existing.and_then(|m| m.raw_tangent_buffer.as_ref()),
-            DerivedBufferProfile::RawTangent,
-            verts * 16,
-            limits.usages.tangent,
-            limits.storage_size_limit,
-        )?),
-        uv1_buffer: Some(alloc_derived(
-            existing.and_then(|m| m.uv1_buffer.as_ref()),
-            DerivedBufferProfile::Uv1,
-            verts * 8,
-            limits.usages.vertex,
-            limits.max_buffer_size,
-        )?),
-        uv2_buffer: None,
-        uv3_buffer: None,
-        wide_low_uv_buffer: None,
-        wide_high_uv_buffer: None,
-    };
+    let derived = allocate_generated_point_derived_streams(ctx, asset_id, verts, existing, limits)?;
 
     let derived_available_mask = derived.available_mask();
     let derived_stream_state = MeshDerivedStreamState::after_full_upload(

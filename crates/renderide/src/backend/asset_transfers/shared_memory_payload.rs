@@ -14,7 +14,7 @@ use crate::shared::buffer::SharedMemoryBufferDescriptor;
 const PAYLOAD_COPY_CHUNK_BYTES: usize = 8 * 1024 * 1024;
 
 /// Owned bytes shared with background asset jobs. -xlinka
-pub(super) type OwnedSharedMemoryPayload = Arc<Vec<u8>>;
+pub(super) type OwnedSharedMemoryPayload = Arc<[u8]>;
 
 /// Incremental shared-memory copy state. -xlinka
 #[derive(Debug)]
@@ -57,7 +57,7 @@ impl SharedMemoryPayloadCopy {
             if end < self.expected_len {
                 return Some(Ok(None));
             }
-            Some(Ok(Some(Arc::new(std::mem::take(&mut self.bytes)))))
+            Some(Ok(Some(Arc::from(std::mem::take(&mut self.bytes)))))
         })
     }
 }

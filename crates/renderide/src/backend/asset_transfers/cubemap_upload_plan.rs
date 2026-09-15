@@ -110,7 +110,9 @@ impl CubemapUploadStepper {
                     Some(Ok(Some(payload))) => {
                         let stage = std::mem::replace(&mut self.stage, CubemapUploadStage::Start);
                         let CubemapUploadStage::CopyingChain { uploader, .. } = stage else {
-                            unreachable!();
+                            return Err(TextureUploadError::from(
+                                "cubemap upload state changed while copying its payload",
+                            ));
                         };
                         self.stage = CubemapUploadStage::Chain { uploader, payload };
                         Ok(CubemapUploadCompletion::Continue)
